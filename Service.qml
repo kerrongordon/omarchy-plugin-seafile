@@ -271,9 +271,11 @@ Item {
   // any freedesktop-notification-spec call goes through, so it renders
   // exactly like every other app's notification rather than needing its
   // own bespoke toast UI in this plugin.
+  readonly property string logoPath: String(Qt.resolvedUrl("icons/seafile.png")).replace("file://", "")
+
   function notify(summary, body, urgency) {
     if (muteNotifications) return
-    var args = ["notify-send", "-a", "Seafile", "-u", urgency || "normal"]
+    var args = ["notify-send", "-a", "Seafile", "-u", urgency || "normal", "-i", logoPath]
     args.push(summary)
     if (body) args.push(body)
     Quickshell.execDetached(args)

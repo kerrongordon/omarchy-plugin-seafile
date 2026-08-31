@@ -157,3 +157,7 @@ account removed.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+`icons/seafile.png` is from [selfh.st/icons](https://github.com/selfhst/icons)
+(via [dashboardicons.com](https://dashboardicons.com/icons/external/seafile)),
+licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).

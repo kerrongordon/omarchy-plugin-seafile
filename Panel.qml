@@ -439,8 +439,9 @@ Panel {
             spacing: Style.space(8)
 
             Button {
-              text: "Add library"
+              text: ""
               iconText: "\uf067"
+              tooltipText: "Add library"
               foreground: root.foreground
               fontFamily: root.fontFamily
               bordered: true
@@ -448,8 +449,9 @@ Panel {
             }
 
             Button {
-              text: "Activity"
+              text: ""
               iconText: "\uf1da"
+              tooltipText: "Activity"
               foreground: root.foreground
               fontFamily: root.fontFamily
               bordered: true
@@ -1386,25 +1388,23 @@ Panel {
 
         Text {
           Layout.fillWidth: true
-          readonly property var sizeMB: libraryRow.library ? seafile.librarySizes[libraryRow.library.id] : undefined
           text: libraryRow.meta.label
             + (libraryRow.library && libraryRow.library.path ? " \u00b7 " + libraryRow.library.path : "")
-            + (sizeMB !== undefined ? " \u00b7 " + sizeMB + " MB" : "")
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
-          elide: Text.ElideRight
+          elide: Text.ElideMiddle
         }
       }
 
-      PanelActionButton {
-        visible: libraryRow.library && seafile.accountLinked
-        iconText: "\uf14c"
-        tooltipText: "Open in Seahub"
-        foreground: root.dim
-        fontFamily: root.fontFamily
+      Text {
+        readonly property var sizeMB: libraryRow.library ? seafile.librarySizes[libraryRow.library.id] : undefined
+        visible: sizeMB !== undefined
+        text: sizeMB + " MB"
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
         Layout.alignment: Qt.AlignVCenter
-        onClicked: root.openInSeahub(libraryRow.library.id)
       }
 
       PanelActionButton {
@@ -1416,6 +1416,16 @@ Panel {
         fontFamily: root.fontFamily
         Layout.alignment: Qt.AlignVCenter
         onClicked: seafile.refreshLibrarySize(libraryRow.library.id, libraryRow.library.path)
+      }
+
+      PanelActionButton {
+        visible: libraryRow.library && seafile.accountLinked
+        iconText: "\uf14c"
+        tooltipText: "Open in Seahub"
+        foreground: root.dim
+        fontFamily: root.fontFamily
+        Layout.alignment: Qt.AlignVCenter
+        onClicked: root.openInSeahub(libraryRow.library.id)
       }
 
       PanelActionButton {

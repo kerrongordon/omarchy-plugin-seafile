@@ -167,14 +167,21 @@ Panel {
 
   // Seahub's web file browser for a library -- the things this widget
   // deliberately doesn't do itself (history, sharing, permissions).
-  function seahubUrl(repoId) {
+  // `/library/<id>/<name>/` is the real route (a plain Django path, no
+  // hash) -- confirmed against a live server: an unauthenticated request
+  // to it 302s to login with the path preserved in `next=`, while the
+  // older Angular-era `#common/lib/<id>/` hash route this used to build
+  // 404s outright on a current Seahub. The name only needs to be *a*
+  // valid path segment (Seahub resolves the library from the id and just
+  // displays the name back), so it's URL-encoded, not validated.
+  function seahubUrl(repoId, repoName) {
     var base = String(seafile.accountServer || "").replace(/\/+$/, "")
     if (!base || !repoId) return ""
-    return base + "/#common/lib/" + repoId + "/"
+    return base + "/library/" + repoId + "/" + encodeURIComponent(repoName || "") + "/"
   }
 
-  function openInSeahub(repoId) {
-    var url = seahubUrl(repoId)
+  function openInSeahub(repoId, repoName) {
+    var url = seahubUrl(repoId, repoName)
     if (url) Qt.openUrlExternally(url)
   }
 
@@ -1425,7 +1432,7 @@ Panel {
         foreground: root.dim
         fontFamily: root.fontFamily
         Layout.alignment: Qt.AlignVCenter
-        onClicked: root.openInSeahub(libraryRow.library.id)
+        onClicked: root.openInSeahub(libraryRow.library.id, libraryRow.library.name)
       }
 
       PanelActionButton {
@@ -1500,7 +1507,7 @@ Panel {
         tooltipText: "Open in Seahub"
         foreground: root.dim
         fontFamily: root.fontFamily
-        onClicked: root.openInSeahub(remoteRow.remoteLib.id)
+        onClicked: root.openInSeahub(remoteRow.remoteLib.id, remoteRow.remoteLib.name)
       }
 
       PanelActionButton {

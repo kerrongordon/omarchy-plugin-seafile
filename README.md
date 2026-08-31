@@ -28,7 +28,17 @@ activity feed, plus desktop notifications when files change.
   from each library's commit history.
 - **Desktop notifications** for libraries finishing a sync, sync errors,
   individual file adds/modifications/deletes, and completed
-  downloads/links/creates.
+  downloads/links/creates. Can be muted entirely in the widget's settings
+  (the bar's own plugin-settings dialog, not the in-popup Settings view).
+- **Sync error detail** — which file failed and why, per library, sourced
+  from the local RPC client (`seaf-cli status` only reports a library-level
+  "error" state). Dismiss individual errors once resolved.
+- **Settings**: upload/download bandwidth limits (KB/s), ignore-symlinks,
+  a delete-confirmation threshold, and HTTP/SOCKS proxy configuration —
+  all daemon-level settings the desktop client exposes that no `seaf-cli`
+  subcommand covers, set through the same local RPC client.
+- **Per-library size**, calculated on demand (a button per row, not
+  automatic — walking a large library's files takes a moment).
 
 ## Requirements
 
@@ -94,7 +104,11 @@ Click the bar icon to see your synced libraries. From there:
 - **Add library** — log in (first time) or browse the server's libraries
   and download/link one.
 - **Activity** — recent file changes across your libraries.
-- The small icon on each library row desyncs it (local files are kept).
+- **Errors** — per-file sync error detail, with a count badge when any
+  exist.
+- **Settings** — bandwidth limits, sync behavior, and proxy configuration.
+- The small icons on each library row calculate its size and desync it
+  (local files are kept on desync).
 - The toggle switch in the header starts/stops the Seafile daemon. Once an
   account is linked, the daemon also auto-starts the first time the widget
   loads each session (e.g. at login) so syncing resumes without a manual

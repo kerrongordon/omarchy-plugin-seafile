@@ -165,6 +165,19 @@ Panel {
     Qt.callLater(function() { panelFlick.contentY = 0 })
   }
 
+  // Seahub's web file browser for a library -- the things this widget
+  // deliberately doesn't do itself (history, sharing, permissions).
+  function seahubUrl(repoId) {
+    var base = String(seafile.accountServer || "").replace(/\/+$/, "")
+    if (!base || !repoId) return ""
+    return base + "/#common/lib/" + repoId + "/"
+  }
+
+  function openInSeahub(repoId) {
+    var url = seahubUrl(repoId)
+    if (url) Qt.openUrlExternally(url)
+  }
+
   function openSyncErrors() {
     viewMode = "errors"
     seafile.refreshSyncErrors()
@@ -1068,6 +1081,33 @@ Panel {
               spacing: Style.space(10)
 
               PanelSectionHeader {
+                text: "DEVICE"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+              }
+
+              Text {
+                width: parent.width
+                text: "Name shown in this server's linked-devices list"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+              TextField {
+                id: clientNameField
+                width: parent.width
+                text: seafile.clientName
+                foreground: root.foreground
+              }
+            }
+
+            Column {
+              visible: seafile.settingsLoaded
+              width: parent.width
+              spacing: Style.space(10)
+
+              PanelSectionHeader {
                 text: "BANDWIDTH"
                 foreground: root.foreground
                 fontFamily: root.fontFamily
@@ -1284,6 +1324,7 @@ Panel {
                 seafile.proxyPort = proxyPortField.text
                 seafile.proxyUsername = proxyUsernameField.text
                 seafile.proxyPassword = proxyPasswordField.text
+                seafile.clientName = clientNameField.text
                 seafile.saveSettings()
               }
             }
@@ -1354,6 +1395,16 @@ Panel {
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
         }
+      }
+
+      PanelActionButton {
+        visible: libraryRow.library && seafile.accountLinked
+        iconText: "\uf14c"
+        tooltipText: "Open in Seahub"
+        foreground: root.dim
+        fontFamily: root.fontFamily
+        Layout.alignment: Qt.AlignVCenter
+        onClicked: root.openInSeahub(libraryRow.library.id)
       }
 
       PanelActionButton {
@@ -1432,6 +1483,14 @@ Panel {
         color: root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
+      }
+
+      PanelActionButton {
+        iconText: "\uf14c"
+        tooltipText: "Open in Seahub"
+        foreground: root.dim
+        fontFamily: root.fontFamily
+        onClicked: root.openInSeahub(remoteRow.remoteLib.id)
       }
 
       PanelActionButton {

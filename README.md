@@ -33,12 +33,16 @@ activity feed, plus desktop notifications when files change.
 - **Sync error detail** — which file failed and why, per library, sourced
   from the local RPC client (`seaf-cli status` only reports a library-level
   "error" state). Dismiss individual errors once resolved.
-- **Settings**: upload/download bandwidth limits (KB/s), ignore-symlinks,
-  a delete-confirmation threshold, and HTTP/SOCKS proxy configuration —
-  all daemon-level settings the desktop client exposes that no `seaf-cli`
+- **Settings**: device name (shown in the server's linked-devices list),
+  upload/download bandwidth limits (KB/s), ignore-symlinks, a
+  delete-confirmation threshold, and HTTP/SOCKS proxy configuration — all
+  daemon-level settings the desktop client exposes that no `seaf-cli`
   subcommand covers, set through the same local RPC client.
 - **Per-library size**, calculated on demand (a button per row, not
   automatic — walking a large library's files takes a moment).
+- **Open in Seahub** — a link per library (local or remote) to that
+  library's web file browser, for history/sharing/permissions, which are
+  deliberately out of scope for this widget itself.
 
 ## Requirements
 

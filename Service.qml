@@ -75,6 +75,7 @@ Item {
   property string proxyPort: ""
   property string proxyUsername: ""
   property string proxyPassword: ""
+  property string clientName: ""
 
   property var syncErrors: []
   property bool syncErrorsRefreshing: false
@@ -557,7 +558,8 @@ Item {
     "    'proxyAddr': cfg_str(rpc, 'proxy_addr', ''),",
     "    'proxyPort': cfg_str(rpc, 'proxy_port', ''),",
     "    'proxyUsername': cfg_str(rpc, 'proxy_username', ''),",
-    "    'proxyPassword': cfg_str(rpc, 'proxy_password', '')",
+    "    'proxyPassword': cfg_str(rpc, 'proxy_password', ''),",
+    "    'clientName': cfg_str(rpc, 'client_name', '')",
     "  }",
     "  print(json.dumps({'ok': True, 'settings': out}))",
     "",
@@ -572,6 +574,9 @@ Item {
     "  rpc.set_config('proxy_port', str(payload.get('proxyPort') or ''))",
     "  rpc.set_config('proxy_username', payload.get('proxyUsername') or '')",
     "  rpc.set_config('proxy_password', payload.get('proxyPassword') or '')",
+    "  client_name = payload.get('clientName')",
+    "  if client_name:",
+    "    rpc.set_config('client_name', client_name)",
     "  print(json.dumps({'ok': True}))",
     "",
     "def action_sync_errors(rpc, offset, limit):",
@@ -638,6 +643,7 @@ Item {
         proxyPort = s.proxyPort || ""
         proxyUsername = s.proxyUsername || ""
         proxyPassword = s.proxyPassword || ""
+        clientName = s.clientName || ""
         settingsLoaded = true
         settingsError = ""
       } else {
@@ -661,7 +667,8 @@ Item {
       proxyAddr: proxyAddr,
       proxyPort: proxyPort,
       proxyUsername: proxyUsername,
-      proxyPassword: proxyPassword
+      proxyPassword: proxyPassword,
+      clientName: clientName.trim()
     }
     localActionProcess.command = ["python3", "-c", _localScript, "set_settings"]
     localActionProcess._pendingStdin = JSON.stringify(payload)

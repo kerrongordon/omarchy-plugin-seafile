@@ -19,7 +19,8 @@
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
-      "refreshIntervalSec": 30
+      "refreshIntervalSec": 30,
+      "muteNotifications": false
     },
     "schema": [
       {
@@ -30,6 +31,13 @@
         "max": 3600,
         "step": 5,
         "defaultValue": 30
+      },
+      {
+        "key": "muteNotifications",
+        "type": "boolean",
+        "label": "Mute desktop notifications",
+        "description": "Suppress this widget's own sync/error/login notify-send toasts.",
+        "defaultValue": false
       }
     ]
   }

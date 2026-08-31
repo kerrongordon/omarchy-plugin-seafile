@@ -54,6 +54,35 @@ Item {
 
   property var pathCompletions: []
 
+  readonly property bool muteNotifications: setting("muteNotifications", false) === true
+
+  // ---- Local daemon settings (bandwidth, proxy, sync behavior) --------
+  // All backed directly by the same `seafile` RPC client used for local
+  // sync registration elsewhere in this file -- no seaf-cli subcommand
+  // covers any of this, but the RPC methods it's itself built on
+  // (seafile_set_upload_rate_limit, seafile_get_config, ...) are right
+  // there in the same python module.
+  property bool settingsLoaded: false
+  property bool settingsBusy: false
+  property string settingsError: ""
+  property int uploadLimitKBps: 0
+  property int downloadLimitKBps: 0
+  property bool ignoreSymlinks: false
+  property int deleteConfirmThreshold: 1000000
+  property bool useProxy: false
+  property string proxyType: "http"
+  property string proxyAddr: ""
+  property string proxyPort: ""
+  property string proxyUsername: ""
+  property string proxyPassword: ""
+
+  property var syncErrors: []
+  property bool syncErrorsRefreshing: false
+  property string syncErrorsError: ""
+
+  property var librarySizes: ({})
+  property var librarySizeBusy: ({})
+
   // Optimistic desired daemon state, so the toggle switch throws the instant
   // you click it instead of waiting for seaf-daemon to actually settle.
   // -1 means "just follow the real state"; 0/1 means a stop/start is still
@@ -86,6 +115,7 @@ Item {
   property string _loginOutput: ""
   property string _remoteOutput: ""
   property string _remoteError: ""
+  property string _localOutput: ""
   property string _libraryActionOutput: ""
   property string _libraryActionError: ""
 
@@ -232,6 +262,7 @@ Item {
     notifyLibraryTransitions(merged)
     libraries = merged
     maybeAutoStart()
+    if (daemonRunning) refreshSyncErrors()
   }
 
   // Desktop notification via notify-send -- picked up by the shell's own
@@ -240,6 +271,7 @@ Item {
   // exactly like every other app's notification rather than needing its
   // own bespoke toast UI in this plugin.
   function notify(summary, body, urgency) {
+    if (muteNotifications) return
     var args = ["notify-send", "-a", "Seafile", "-u", urgency || "normal"]
     args.push(summary)
     if (body) args.push(body)
@@ -483,6 +515,221 @@ Item {
     "  print(json.dumps({'ok': False, 'error': str(e)}))"
   ].join("\n")
 
+  // Local-only daemon settings, bandwidth limits, and sync-error detail --
+  // none of this has a seaf-cli subcommand, but it's all plain RPC on the
+  // same local `seafile` python module `_remoteScript`'s rpc_client() also
+  // uses, so it needs no account/token/HTTP at all.
+  readonly property string _localScript: [
+    "import sys, os, json",
+    "",
+    "def rpc_client():",
+    "  import seafile",
+    "  datadir = ''",
+    "  try:",
+    "    with open(os.path.join(os.environ.get('HOME', ''), '.ccnet', 'seafile.ini')) as f:",
+    "      datadir = f.readline().strip()",
+    "  except OSError:",
+    "    pass",
+    "  return seafile.RpcClient(os.path.join(datadir, 'seafile.sock'))",
+    "",
+    "def cfg_str(rpc, key, default):",
+    "  try:",
+    "    val = rpc.get_config(key)",
+    "    return val if val else default",
+    "  except Exception:",
+    "    return default",
+    "",
+    "def cfg_int(rpc, key, default):",
+    "  try:",
+    "    val = rpc.get_config_int(key)",
+    "    return val if val is not None else default",
+    "  except Exception:",
+    "    return default",
+    "",
+    "def action_get_settings(rpc):",
+    "  out = {",
+    "    'uploadLimitBytes': cfg_int(rpc, 'upload_limit', 0),",
+    "    'downloadLimitBytes': cfg_int(rpc, 'download_limit', 0),",
+    "    'ignoreSymlinks': cfg_str(rpc, 'ignore_symlinks', 'false') == 'true',",
+    "    'deleteConfirmThreshold': cfg_int(rpc, 'delete_confirm_threshold', 500),",
+    "    'useProxy': cfg_str(rpc, 'use_proxy', 'false') == 'true',",
+    "    'proxyType': cfg_str(rpc, 'proxy_type', 'http'),",
+    "    'proxyAddr': cfg_str(rpc, 'proxy_addr', ''),",
+    "    'proxyPort': cfg_str(rpc, 'proxy_port', ''),",
+    "    'proxyUsername': cfg_str(rpc, 'proxy_username', ''),",
+    "    'proxyPassword': cfg_str(rpc, 'proxy_password', '')",
+    "  }",
+    "  print(json.dumps({'ok': True, 'settings': out}))",
+    "",
+    "def action_set_settings(rpc, payload):",
+    "  rpc.set_upload_rate_limit(int(payload.get('uploadLimitBytes', 0)))",
+    "  rpc.set_download_rate_limit(int(payload.get('downloadLimitBytes', 0)))",
+    "  rpc.set_config(str('ignore_symlinks'), 'true' if payload.get('ignoreSymlinks') else 'false')",
+    "  rpc.set_config_int('delete_confirm_threshold', int(payload.get('deleteConfirmThreshold', 500)))",
+    "  rpc.set_config('use_proxy', 'true' if payload.get('useProxy') else 'false')",
+    "  rpc.set_config('proxy_type', payload.get('proxyType') or 'http')",
+    "  rpc.set_config('proxy_addr', payload.get('proxyAddr') or '')",
+    "  rpc.set_config('proxy_port', str(payload.get('proxyPort') or ''))",
+    "  rpc.set_config('proxy_username', payload.get('proxyUsername') or '')",
+    "  rpc.set_config('proxy_password', payload.get('proxyPassword') or '')",
+    "  print(json.dumps({'ok': True}))",
+    "",
+    "def action_sync_errors(rpc, offset, limit):",
+    "  errors = rpc.get_file_sync_errors(offset, limit)",
+    "  out = []",
+    "  for e in errors:",
+    "    try:",
+    "      message = rpc.sync_error_id_to_str(e.err_id)",
+    "    except Exception:",
+    "      message = 'Sync error'",
+    "    out.append({'id': e.id, 'repo_id': e.repo_id, 'repo_name': e.repo_name, 'path': e.path, 'message': message, 'timestamp': e.timestamp})",
+    "  out.sort(key=lambda x: x['timestamp'], reverse=True)",
+    "  print(json.dumps({'ok': True, 'errors': out}))",
+    "",
+    "def action_clear_sync_error(rpc, error_id):",
+    "  rpc.del_file_sync_error_by_id(error_id)",
+    "  print(json.dumps({'ok': True}))",
+    "",
+    "def action_dir_size(path):",
+    "  total = 0",
+    "  for dirpath, dirnames, filenames in os.walk(path):",
+    "    for name in filenames:",
+    "      try:",
+    "        total += os.lstat(os.path.join(dirpath, name)).st_size",
+    "      except OSError:",
+    "        pass",
+    "  print(json.dumps({'ok': True, 'mb': round(total / (1024 * 1024), 1)}))",
+    "",
+    "action = sys.argv[1]",
+    "try:",
+    "  if action == 'dir_size':",
+    "    action_dir_size(sys.argv[2])",
+    "  else:",
+    "    rpc = rpc_client()",
+    "    if action == 'get_settings':",
+    "      action_get_settings(rpc)",
+    "    elif action == 'set_settings':",
+    "      action_set_settings(rpc, json.loads(sys.stdin.read() or '{}'))",
+    "    elif action == 'sync_errors':",
+    "      action_sync_errors(rpc, int(sys.argv[2]), int(sys.argv[3]))",
+    "    elif action == 'clear_sync_error':",
+    "      action_clear_sync_error(rpc, int(sys.argv[2]))",
+    "except Exception as e:",
+    "  print(json.dumps({'ok': False, 'error': str(e)}))"
+  ].join("\n")
+
+  function refreshSettings() {
+    if (localActionProcess.running) return
+    settingsBusy = true
+    settingsError = ""
+    localActionProcess.command = ["python3", "-c", _localScript, "get_settings"]
+    localActionProcess._pendingStdin = ""
+    localActionProcess._onDone = function(result) {
+      settingsBusy = false
+      if (result && result.ok) {
+        var s = result.settings
+        uploadLimitKBps = Math.round((s.uploadLimitBytes || 0) / 1024)
+        downloadLimitKBps = Math.round((s.downloadLimitBytes || 0) / 1024)
+        ignoreSymlinks = s.ignoreSymlinks === true
+        deleteConfirmThreshold = s.deleteConfirmThreshold || 500
+        useProxy = s.useProxy === true
+        proxyType = s.proxyType || "http"
+        proxyAddr = s.proxyAddr || ""
+        proxyPort = s.proxyPort || ""
+        proxyUsername = s.proxyUsername || ""
+        proxyPassword = s.proxyPassword || ""
+        settingsLoaded = true
+        settingsError = ""
+      } else {
+        settingsError = (result && result.error) || "Could not read settings"
+      }
+    }
+    localActionProcess.running = true
+  }
+
+  function saveSettings() {
+    if (localActionProcess.running) return
+    settingsBusy = true
+    settingsError = ""
+    var payload = {
+      uploadLimitBytes: Math.max(0, uploadLimitKBps) * 1024,
+      downloadLimitBytes: Math.max(0, downloadLimitKBps) * 1024,
+      ignoreSymlinks: ignoreSymlinks,
+      deleteConfirmThreshold: Math.max(1, deleteConfirmThreshold),
+      useProxy: useProxy,
+      proxyType: proxyType,
+      proxyAddr: proxyAddr,
+      proxyPort: proxyPort,
+      proxyUsername: proxyUsername,
+      proxyPassword: proxyPassword
+    }
+    localActionProcess.command = ["python3", "-c", _localScript, "set_settings"]
+    localActionProcess._pendingStdin = JSON.stringify(payload)
+    localActionProcess._onDone = function(result) {
+      settingsBusy = false
+      if (result && result.ok) {
+        settingsError = ""
+        notify("Seafile", "Settings saved", "normal")
+      } else {
+        settingsError = (result && result.error) || "Could not save settings"
+      }
+    }
+    localActionProcess.running = true
+  }
+
+  function refreshSyncErrors() {
+    if (localActionProcess.running) return
+    syncErrorsRefreshing = true
+    syncErrorsError = ""
+    localActionProcess.command = ["python3", "-c", _localScript, "sync_errors", "0", "50"]
+    localActionProcess._pendingStdin = ""
+    localActionProcess._onDone = function(result) {
+      syncErrorsRefreshing = false
+      if (result && result.ok) {
+        syncErrorsError = ""
+        syncErrors = result.errors || []
+      } else {
+        syncErrors = []
+        syncErrorsError = (result && result.error) || "Could not read sync errors"
+      }
+    }
+    localActionProcess.running = true
+  }
+
+  function clearSyncError(id) {
+    if (localActionProcess.running) return
+    localActionProcess.command = ["python3", "-c", _localScript, "clear_sync_error", String(id)]
+    localActionProcess._pendingStdin = ""
+    localActionProcess._onDone = function(result) {
+      refreshSyncErrors()
+    }
+    localActionProcess.running = true
+  }
+
+  // calc_dir_size walks the whole local tree synchronously, so this is
+  // on-demand per library (a button click), never automatic on refresh.
+  function refreshLibrarySize(repoId, path) {
+    if (!path || localActionProcess.running) return
+    var busy = {}
+    for (var k in librarySizeBusy) busy[k] = librarySizeBusy[k]
+    busy[repoId] = true
+    librarySizeBusy = busy
+    localActionProcess.command = ["python3", "-c", _localScript, "dir_size", path]
+    localActionProcess._pendingStdin = ""
+    localActionProcess._onDone = function(result) {
+      var stillBusy = {}
+      for (var k2 in librarySizeBusy) if (k2 !== repoId) stillBusy[k2] = librarySizeBusy[k2]
+      librarySizeBusy = stillBusy
+      if (result && result.ok) {
+        var sizes = {}
+        for (var k3 in librarySizes) sizes[k3] = librarySizes[k3]
+        sizes[repoId] = result.mb
+        librarySizes = sizes
+      }
+    }
+    localActionProcess.running = true
+  }
+
   function refreshRemote() {
     if (!accountLinked || remoteActionProcess.running) return
     remoteRefreshing = true
@@ -683,9 +930,17 @@ Item {
     onExited: function(exitCode) {
       var stdout = String(controlStdout.text || root._controlOutput || "")
       var stderr = String(controlStderr.text || root._controlError || "")
-      if (exitCode !== 0) {
+      // `seaf-cli start` exits non-zero if seaf-daemon is already running
+      // (it can't reacquire the data-dir lock) -- a benign race (two start
+      // attempts overlapping, e.g. maybeAutoStart firing on a fresh plugin
+      // reload while a prior instance's daemon is still alive), not a real
+      // failure. The daemon is fine; just let the next refresh confirm it
+      // rather than alarming the user with a critical notification.
+      var message = (stderr || stdout || "Seafile command failed").trim()
+      var alreadyRunning = message.indexOf("already used by another Seafile client instance") !== -1
+      if (exitCode !== 0 && !alreadyRunning) {
         root._desired = -1
-        root.lastError = (stderr || stdout || "Seafile command failed").trim()
+        root.lastError = message
         root.actionStatus = root.lastError
         root.notify("Seafile", root.lastError, "critical")
         actionStatusTimer.restart()
@@ -767,6 +1022,30 @@ Item {
     }
     onExited: function() {
       var raw = String(remoteActionStdout.text || root._remoteOutput || "")
+      var result = null
+      try { result = JSON.parse(raw.trim()) } catch (e) { /* leave null */ }
+      var done = _onDone
+      _onDone = null
+      if (done) done(result)
+    }
+  }
+
+  Process {
+    // Runs _localScript for settings/bandwidth/sync-errors/dir-size, same
+    // _onDone(result) convention as remoteActionProcess above.
+    id: localActionProcess
+    running: false
+    command: []
+    property string _pendingStdin: ""
+    property var _onDone: null
+    stdinEnabled: true
+    stdout: StdioCollector { id: localActionStdout; waitForEnd: true; onStreamFinished: root._localOutput = text }
+    onStarted: {
+      write(_pendingStdin)
+      _pendingStdin = ""
+    }
+    onExited: function() {
+      var raw = String(localActionStdout.text || root._localOutput || "")
       var result = null
       try { result = JSON.parse(raw.trim()) } catch (e) { /* leave null */ }
       var done = _onDone

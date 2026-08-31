@@ -19,7 +19,7 @@ Panel {
   ipcTarget: "io.github.kerrongordon.seafile"
   manageIpc: false
 
-  // "libraries" (default) | "login" | "browse" | "create" | "activity"
+  // "libraries" (default) | "login" | "browse" | "create" | "activity" | "errors" | "settings"
   property string viewMode: "libraries"
   property string focusSection: "header"
   property int libraryIndex: 0
@@ -162,6 +162,18 @@ Panel {
   function openActivity() {
     viewMode = "activity"
     seafile.refreshActivity()
+    Qt.callLater(function() { panelFlick.contentY = 0 })
+  }
+
+  function openSyncErrors() {
+    viewMode = "errors"
+    seafile.refreshSyncErrors()
+    Qt.callLater(function() { panelFlick.contentY = 0 })
+  }
+
+  function openSettings() {
+    viewMode = "settings"
+    seafile.refreshSettings()
     Qt.callLater(function() { panelFlick.contentY = 0 })
   }
 
@@ -340,6 +352,8 @@ Panel {
                 : root.viewMode === "login" ? "Log in to Seafile"
                 : root.viewMode === "browse" ? ("Libraries on " + seafile.accountServer)
                 : root.viewMode === "activity" ? "Recent activity"
+                : root.viewMode === "errors" ? "Sync errors"
+                : root.viewMode === "settings" ? "Settings"
                 : "Create a new library"
               foreground: root.foreground
               fontFamily: root.fontFamily
@@ -406,7 +420,7 @@ Panel {
             }
           }
 
-          Row {
+          Flow {
             visible: root.viewMode === "libraries" && seafile.installed && seafile.accountLinked
             width: parent.width
             spacing: Style.space(8)
@@ -427,6 +441,22 @@ Panel {
               fontFamily: root.fontFamily
               bordered: true
               onClicked: root.openActivity()
+            }
+
+            Button {
+              text: seafile.syncErrors.length > 0 ? "Errors (" + seafile.syncErrors.length + ")" : "Errors"
+              foreground: seafile.syncErrors.length > 0 ? root.urgent : root.foreground
+              fontFamily: root.fontFamily
+              bordered: true
+              onClicked: root.openSyncErrors()
+            }
+
+            Button {
+              text: "Settings"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              bordered: true
+              onClicked: root.openSettings()
             }
 
             Button {
@@ -961,6 +991,299 @@ Panel {
               }
             }
           }
+
+          // ---- Sync errors view ----------------------------------------------
+          Column {
+            visible: root.viewMode === "errors"
+            width: parent.width
+            spacing: Style.space(10)
+
+            Button {
+              text: seafile.syncErrorsRefreshing ? "Refreshing…" : "Refresh"
+              iconText: ""
+              iconSpinning: seafile.syncErrorsRefreshing
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: seafile.refreshSyncErrors()
+            }
+
+            Text {
+              visible: seafile.syncErrorsError !== ""
+              width: parent.width
+              text: seafile.syncErrorsError
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              visible: !seafile.syncErrorsRefreshing && seafile.syncErrorsError === "" && seafile.syncErrors.length === 0
+              width: parent.width
+              text: "No sync errors."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              horizontalAlignment: Text.AlignHCenter
+            }
+
+            Column {
+              width: parent.width
+              spacing: Style.space(10)
+
+              Repeater {
+                model: seafile.syncErrors
+                SyncErrorRow {
+                  required property var modelData
+                  width: parent.width
+                  entry: modelData
+                }
+              }
+            }
+          }
+
+          // ---- Settings view ---------------------------------------------
+          Column {
+            visible: root.viewMode === "settings"
+            width: parent.width
+            spacing: Style.space(14)
+
+            Text {
+              visible: !seafile.settingsLoaded
+              width: parent.width
+              text: seafile.settingsBusy ? "Loading settings…" : "Could not load settings."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              horizontalAlignment: Text.AlignHCenter
+            }
+
+            Column {
+              visible: seafile.settingsLoaded
+              width: parent.width
+              spacing: Style.space(10)
+
+              PanelSectionHeader {
+                text: "BANDWIDTH"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+              }
+
+              Text {
+                width: parent.width
+                text: "Upload limit, KB/s (0 = unlimited)"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+              TextField {
+                id: uploadLimitField
+                width: parent.width
+                text: String(seafile.uploadLimitKBps)
+                foreground: root.foreground
+              }
+
+              Text {
+                width: parent.width
+                text: "Download limit, KB/s (0 = unlimited)"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+              TextField {
+                id: downloadLimitField
+                width: parent.width
+                text: String(seafile.downloadLimitKBps)
+                foreground: root.foreground
+              }
+            }
+
+            Column {
+              visible: seafile.settingsLoaded
+              width: parent.width
+              spacing: Style.space(10)
+
+              PanelSectionHeader {
+                text: "SYNC BEHAVIOR"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+              }
+
+              Row {
+                width: parent.width
+                spacing: Style.space(8)
+
+                ToggleSwitch {
+                  id: ignoreSymlinksToggle
+                  anchors.verticalCenter: parent.verticalCenter
+                  checked: seafile.ignoreSymlinks
+                  foreground: root.foreground
+                  onToggled: checked = !checked
+                }
+
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "Ignore symlinks"
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                }
+              }
+
+              Text {
+                width: parent.width
+                text: "Confirm before deleting more than this many files in one sync"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+              TextField {
+                id: deleteConfirmField
+                width: parent.width
+                text: String(seafile.deleteConfirmThreshold)
+                foreground: root.foreground
+              }
+            }
+
+            Column {
+              visible: seafile.settingsLoaded
+              width: parent.width
+              spacing: Style.space(10)
+
+              PanelSectionHeader {
+                text: "PROXY"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+              }
+
+              Row {
+                width: parent.width
+                spacing: Style.space(8)
+
+                ToggleSwitch {
+                  id: useProxyToggle
+                  anchors.verticalCenter: parent.verticalCenter
+                  checked: seafile.useProxy
+                  foreground: root.foreground
+                  onToggled: checked = !checked
+                }
+
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "Use proxy"
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                }
+              }
+
+              Row {
+                visible: useProxyToggle.checked
+                spacing: Style.space(8)
+
+                Button {
+                  text: "None"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  bordered: proxyTypeState.value !== "http" && proxyTypeState.value !== "socks"
+                  onClicked: proxyTypeState.value = "none"
+                }
+
+                Button {
+                  text: "HTTP"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  bordered: proxyTypeState.value === "http"
+                  onClicked: proxyTypeState.value = "http"
+                }
+
+                Button {
+                  text: "SOCKS"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  bordered: proxyTypeState.value === "socks"
+                  onClicked: proxyTypeState.value = "socks"
+                }
+              }
+
+              Item {
+                id: proxyTypeState
+                property string value: seafile.proxyType
+                visible: false
+              }
+
+              TextField {
+                id: proxyAddrField
+                visible: useProxyToggle.checked
+                width: parent.width
+                placeholderText: "Proxy address"
+                text: seafile.proxyAddr
+                foreground: root.foreground
+              }
+
+              TextField {
+                id: proxyPortField
+                visible: useProxyToggle.checked
+                width: parent.width
+                placeholderText: "Proxy port"
+                text: seafile.proxyPort
+                foreground: root.foreground
+              }
+
+              TextField {
+                id: proxyUsernameField
+                visible: useProxyToggle.checked
+                width: parent.width
+                placeholderText: "Proxy username (optional)"
+                text: seafile.proxyUsername
+                foreground: root.foreground
+              }
+
+              TextField {
+                id: proxyPasswordField
+                visible: useProxyToggle.checked
+                width: parent.width
+                password: true
+                placeholderText: "Proxy password (optional)"
+                text: seafile.proxyPassword
+                foreground: root.foreground
+              }
+            }
+
+            Text {
+              visible: seafile.settingsError !== ""
+              width: parent.width
+              text: seafile.settingsError
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+
+            Button {
+              visible: seafile.settingsLoaded
+              text: seafile.settingsBusy ? "Saving…" : "Save"
+              iconText: ""
+              iconSpinning: seafile.settingsBusy
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              bordered: true
+              onClicked: {
+                seafile.uploadLimitKBps = parseInt(uploadLimitField.text, 10) || 0
+                seafile.downloadLimitKBps = parseInt(downloadLimitField.text, 10) || 0
+                seafile.ignoreSymlinks = ignoreSymlinksToggle.checked
+                seafile.deleteConfirmThreshold = parseInt(deleteConfirmField.text, 10) || 500
+                seafile.useProxy = useProxyToggle.checked
+                seafile.proxyType = proxyTypeState.value
+                seafile.proxyAddr = proxyAddrField.text
+                seafile.proxyPort = proxyPortField.text
+                seafile.proxyUsername = proxyUsernameField.text
+                seafile.proxyPassword = proxyPasswordField.text
+                seafile.saveSettings()
+              }
+            }
+          }
         }
       }
     }
@@ -1018,7 +1341,10 @@ Panel {
 
         Text {
           Layout.fillWidth: true
-          text: libraryRow.meta.label + (libraryRow.library && libraryRow.library.path ? " · " + libraryRow.library.path : "")
+          readonly property var sizeMB: libraryRow.library ? seafile.librarySizes[libraryRow.library.id] : undefined
+          text: libraryRow.meta.label
+            + (libraryRow.library && libraryRow.library.path ? " \u00b7 " + libraryRow.library.path : "")
+            + (sizeMB !== undefined ? " \u00b7 " + sizeMB + " MB" : "")
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
@@ -1027,7 +1353,18 @@ Panel {
       }
 
       PanelActionButton {
-        iconText: ""
+        visible: libraryRow.library && seafile.librarySizes[libraryRow.library.id] === undefined
+        enabled: !(libraryRow.library && seafile.librarySizeBusy[libraryRow.library.id] === true)
+        iconText: "\uf021"
+        tooltipText: "Calculate size"
+        foreground: root.dim
+        fontFamily: root.fontFamily
+        Layout.alignment: Qt.AlignVCenter
+        onClicked: seafile.refreshLibrarySize(libraryRow.library.id, libraryRow.library.path)
+      }
+
+      PanelActionButton {
+        iconText: "\uf127"
         tooltipText: "Desync (keeps local files)"
         foreground: root.dim
         fontFamily: root.fontFamily
@@ -1149,6 +1486,53 @@ Panel {
         font.pixelSize: Style.font.caption
         elide: Text.ElideRight
       }
+    }
+  }
+
+  component SyncErrorRow: RowLayout {
+    id: syncErrorRow
+    property var entry: null
+
+    spacing: Style.space(8)
+
+    Text {
+      text: ""
+      color: root.urgent
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.icon
+      Layout.alignment: Qt.AlignTop
+    }
+
+    ColumnLayout {
+      Layout.fillWidth: true
+      spacing: Style.space(1)
+
+      Text {
+        Layout.fillWidth: true
+        text: syncErrorRow.entry ? syncErrorRow.entry.path : ""
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        elide: Text.ElideMiddle
+      }
+
+      Text {
+        Layout.fillWidth: true
+        text: syncErrorRow.entry ? (syncErrorRow.entry.message + " · " + syncErrorRow.entry.repo_name + " · " + Model.relativeTime(syncErrorRow.entry.timestamp)) : ""
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
+      }
+    }
+
+    PanelActionButton {
+      iconText: ""
+      tooltipText: "Dismiss"
+      foreground: root.dim
+      fontFamily: root.fontFamily
+      Layout.alignment: Qt.AlignVCenter
+      onClicked: seafile.clearSyncError(syncErrorRow.entry.id)
     }
   }
 }

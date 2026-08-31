@@ -444,7 +444,9 @@ Panel {
             }
 
             Button {
-              text: seafile.syncErrors.length > 0 ? "Errors (" + seafile.syncErrors.length + ")" : "Errors"
+              text: ""
+              iconText: ""
+              tooltipText: seafile.syncErrors.length > 0 ? "Errors (" + seafile.syncErrors.length + ")" : "Errors"
               foreground: seafile.syncErrors.length > 0 ? root.urgent : root.foreground
               fontFamily: root.fontFamily
               bordered: true
@@ -452,7 +454,9 @@ Panel {
             }
 
             Button {
-              text: "Settings"
+              text: ""
+              iconText: ""
+              tooltipText: "Settings"
               foreground: root.foreground
               fontFamily: root.fontFamily
               bordered: true

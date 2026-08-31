@@ -1405,9 +1405,9 @@ Panel {
       }
 
       Text {
-        readonly property var sizeMB: libraryRow.library ? seafile.librarySizes[libraryRow.library.id] : undefined
-        visible: sizeMB !== undefined
-        text: sizeMB + " MB"
+        readonly property var sizeGB: libraryRow.library ? seafile.librarySizes[libraryRow.library.id] : undefined
+        visible: sizeGB !== undefined
+        text: sizeGB + " GB"
         color: root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption

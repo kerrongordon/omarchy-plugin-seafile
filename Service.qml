@@ -605,7 +605,7 @@ Item {
     "        total += os.lstat(os.path.join(dirpath, name)).st_size",
     "      except OSError:",
     "        pass",
-    "  print(json.dumps({'ok': True, 'mb': round(total / (1024 * 1024), 1)}))",
+    "  print(json.dumps({'ok': True, 'gb': round(total / (1024 * 1024 * 1024), 2)}))",
     "",
     "action = sys.argv[1]",
     "try:",
@@ -732,7 +732,7 @@ Item {
       if (result && result.ok) {
         var sizes = {}
         for (var k3 in librarySizes) sizes[k3] = librarySizes[k3]
-        sizes[repoId] = result.mb
+        sizes[repoId] = result.gb
         librarySizes = sizes
       }
     }

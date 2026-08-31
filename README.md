@@ -34,12 +34,38 @@ activity feed, plus desktop notifications when files change.
 
 - [Omarchy](https://omarchy.org/) with the Quickshell-based bar.
 - `seaf-cli` (the Seafile command-line client) installed and initialized
-  (`seaf-cli init`), with `seaf-daemon` able to run. Most distros package
-  this as part of `seafile-client` or a standalone `seafile-cli`/`seaf-cli`
-  package.
+  (`seaf-cli init`), with `seaf-daemon` able to run.
 - `python3` with the `seafile` RPC module (installed alongside `seaf-cli`
   as a dependency) — used for the local parts of downloading/linking a
   library, and `sqlite3`/`configparser` from the standard library.
+
+### Installing seaf-cli on Arch / Omarchy
+
+`seaf-cli` isn't in the official Arch repos — it comes from the
+[`seafile`](https://aur.archlinux.org/packages/seafile) AUR package (it
+provides `seafile-client-cli`, i.e. `seaf-cli`, and conflicts with
+`seafile-server`, so don't install both):
+
+```sh
+omarchy pkg aur add seafile
+```
+
+Or with `yay`/any AUR helper directly:
+
+```sh
+yay -S seafile
+```
+
+Then initialize it once, pointing at wherever you want libraries to sync
+to by default:
+
+```sh
+seaf-cli init -d ~/Seafile
+seaf-cli start
+```
+
+The plugin picks up from there — open the bar icon and use "Log in" to
+connect to your server.
 
 ## Why not just call `seaf-cli` for everything?
 

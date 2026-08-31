@@ -6,6 +6,8 @@ client (`seafile-applet`) required. Covers everything that GUI normally
 does: account login, browsing and adding libraries, sync status, and an
 activity feed, plus desktop notifications when files change.
 
+![Seafile panel showing synced libraries, sizes, and per-library actions](preview.png)
+
 ## Features
 
 - **Status icon** that reflects real sync state: a spinning icon while

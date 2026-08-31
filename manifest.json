@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.kerrongordon.seafile",
+  "name": "Seafile",
+  "version": "1.0.0",
+  "author": "kerrongordon",
+  "license": "MIT",
+  "description": "Seafile sync status, library browsing, account login, and daemon control backed by seaf-cli",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Seafile",
+    "description": "Seafile sync status and library list, backed by seaf-cli",
+    "category": "Files",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 30
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 10,
+        "max": 3600,
+        "step": 5,
+        "defaultValue": 30
+      }
+    ]
+  }
+}

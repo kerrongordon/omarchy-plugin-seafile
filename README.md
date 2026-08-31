@@ -1,0 +1,112 @@
+# Seafile
+
+A Seafile sync client for the Omarchy bar, built entirely on top of
+[`seaf-cli`](https://help.seafile.com/syncing_client/seaf-cli/) — no GUI
+client (`seafile-applet`) required. Covers everything that GUI normally
+does: account login, browsing and adding libraries, sync status, and an
+activity feed, plus desktop notifications when files change.
+
+## Features
+
+- **Status icon** that reflects real sync state: a spinning icon while
+  anything is uploading/downloading/indexing, a warning triangle on a sync
+  error, plain otherwise. Right-click to refresh, middle-click to
+  start/stop the daemon.
+- **Library list** with per-library status, path, and a one-click desync
+  (unlinks without touching local files).
+- **Standalone login** — its own account-token exchange with the server,
+  independent of the GUI client. If `seafile-applet` happens to be logged
+  in already, its account is imported automatically as a convenience, but
+  this plugin never depends on it being installed.
+- **Add libraries**: browse everything on the server (with size and an
+  encrypted-library indicator), download a fresh copy to a new folder, or
+  link an existing local folder — all inline in the bar popup, with
+  shell-style Tab path completion instead of a file-picker dialog (opening
+  one would steal focus and close the popup).
+- **Create a library** on the server, encrypted or not.
+- **Activity feed** — recent file changes across your libraries, pulled
+  from each library's commit history.
+- **Desktop notifications** for libraries finishing a sync, sync errors,
+  individual file adds/modifications/deletes, and completed
+  downloads/links/creates.
+
+## Requirements
+
+- [Omarchy](https://omarchy.org/) with the Quickshell-based bar.
+- `seaf-cli` (the Seafile command-line client) installed and initialized
+  (`seaf-cli init`), with `seaf-daemon` able to run. Most distros package
+  this as part of `seafile-client` or a standalone `seafile-cli`/`seaf-cli`
+  package.
+- `python3` with the `seafile` RPC module (installed alongside `seaf-cli`
+  as a dependency) — used for the local parts of downloading/linking a
+  library, and `sqlite3`/`configparser` from the standard library.
+
+## Why not just call `seaf-cli` for everything?
+
+`seaf-cli`'s own `list-remote`/`download`/`sync`/`create` subcommands make
+their HTTP requests with Python's default `urllib` User-Agent. Servers
+behind a hardened reverse proxy or WAF (Cloudflare, etc.) commonly block
+that outright, which surfaces as opaque failures with nothing to do with
+your actual Seafile account (in one case, literally a bare `error code:
+1010` — a Cloudflare bot-block code, not a Seafile error). This plugin
+reimplements those four operations itself with a normal User-Agent header,
+using the same local `seafile` RPC socket `seaf-cli` uses for the parts
+that don't touch the network. Local-only operations (`list`, `status`,
+`start`, `stop`, `desync`) go straight through plain `seaf-cli`, since
+those never hit the network in the first place.
+
+## Install
+
+```sh
+omarchy plugin add https://github.com/kerrongordon/omarchy-plugin-seafile.git --enable
+```
+
+## Usage
+
+Click the bar icon to see your synced libraries. From there:
+
+- **Add library** — log in (first time) or browse the server's libraries
+  and download/link one.
+- **Activity** — recent file changes across your libraries.
+- The small icon on each library row desyncs it (local files are kept).
+- The toggle switch in the header starts/stops the Seafile daemon.
+
+## Configure
+
+```sh
+omarchy bar move io.github.kerrongordon.seafile --section right
+```
+
+The refresh interval (how often local status, account state, and activity
+are polled) is configurable from the plugin's settings in the bar
+configuration UI, or directly in `~/.config/omarchy/shell.json`:
+
+```json
+{ "id": "io.github.kerrongordon.seafile", "refreshIntervalSec": 30 }
+```
+
+## Security notes
+
+- Your account server/username/token are stored in
+  `~/.local/state/omarchy-seafile/account.ini`, mode `0600`. Your password
+  is never written to disk — it's used once, over the login process's
+  stdin (never a command-line argument), to fetch the token.
+- Deliberately stored outside the plugin's own directory: Omarchy hot-reloads
+  a plugin whenever a file under its directory changes, and a file this
+  plugin itself rewrites periodically would otherwise trigger an infinite
+  reload loop.
+
+## Uninstall
+
+```sh
+omarchy plugin remove io.github.kerrongordon.seafile
+```
+
+This does not touch your Seafile libraries or their local files, and does
+not stop `seaf-daemon` if it's running — only the bar widget goes away.
+Delete `~/.local/state/omarchy-seafile/` if you also want the stored
+account removed.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

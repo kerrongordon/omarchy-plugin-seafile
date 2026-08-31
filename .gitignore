@@ -1,0 +1,5 @@
+# Never anything credential-shaped, even if a future refactor moves the
+# account store back under the plugin directory by accident.
+account.ini
+*.token
+*.secret

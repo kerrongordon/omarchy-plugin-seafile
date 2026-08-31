@@ -19,8 +19,7 @@ Panel {
   ipcTarget: "io.github.kerrongordon.seafile"
   manageIpc: false
 
-  // "libraries" (default) | "browse" | "create" | "activity"
-  // (login is a separate FloatingWindow, not a mode of this anchored panel)
+  // "libraries" (default) | "login" | "browse" | "create" | "activity"
   property string viewMode: "libraries"
   property string focusSection: "header"
   property int libraryIndex: 0
@@ -145,13 +144,18 @@ Panel {
   function openLogin() {
     seafile.loginError = ""
     seafile.loginNeedsTfa = false
-    loginWindow.visible = true
+    loginPasswordField.text = ""
+    loginTfaField.text = ""
+    viewMode = "login"
+    Qt.callLater(function() { panelFlick.contentY = 0 })
   }
 
   function goToLibraries() {
     pendingLibrary = null
     viewMode = "libraries"
     cursorActive = false
+    loginPasswordField.text = ""
+    loginTfaField.text = ""
     Qt.callLater(function() { panelFlick.contentY = 0 })
   }
 
@@ -228,12 +232,7 @@ Panel {
     target: seafile
     function onLibrariesChanged() { root.ensureCursor() }
     function onAccountLinkedChanged() {
-      if (seafile.accountLinked && loginWindow.visible) {
-        loginWindow.visible = false
-        // Re-opening explicitly (rather than relying on onOpenedChanged,
-        // which forces viewMode back to "libraries" on every open) is what
-        // lands the reopened popup straight on the browse view.
-        root.open()
+      if (seafile.accountLinked && root.viewMode === "login") {
         root.viewMode = "browse"
         seafile.refreshRemote()
       }
@@ -338,6 +337,7 @@ Panel {
               width: parent.width
               title: "Seafile"
               meta: root.viewMode === "libraries" ? root.summary
+                : root.viewMode === "login" ? "Log in to Seafile"
                 : root.viewMode === "browse" ? ("Libraries on " + seafile.accountServer)
                 : root.viewMode === "activity" ? "Recent activity"
                 : "Create a new library"
@@ -557,6 +557,123 @@ Panel {
                   library: modelData
                   rowIndex: index
                 }
+              }
+            }
+          }
+
+          // ---- Login view ------------------------------------------------
+          Column {
+            visible: root.viewMode === "login"
+            width: parent.width
+            spacing: Style.space(10)
+
+            Text {
+              width: parent.width
+              text: "Server URL"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+            TextField {
+              id: loginServerField
+              width: parent.width
+              placeholderText: "https://seafile.example.com"
+              text: seafile.accountServer
+              foreground: root.foreground
+              Keys.onReturnPressed: loginUsernameField.forceActiveFocus()
+            }
+
+            Text {
+              width: parent.width
+              text: "Username / email"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+            TextField {
+              id: loginUsernameField
+              width: parent.width
+              placeholderText: "you@example.com"
+              text: seafile.accountUser
+              foreground: root.foreground
+              Keys.onReturnPressed: loginPasswordField.forceActiveFocus()
+            }
+
+            Text {
+              width: parent.width
+              text: "Password"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+            TextField {
+              id: loginPasswordField
+              width: parent.width
+              password: true
+              foreground: root.foreground
+              Keys.onReturnPressed: {
+                if (seafile.loginNeedsTfa) loginTfaField.forceActiveFocus()
+                else loginSubmit.clicked()
+              }
+            }
+
+            Text {
+              visible: seafile.loginNeedsTfa
+              width: parent.width
+              text: "Two-factor code"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+            TextField {
+              id: loginTfaField
+              visible: seafile.loginNeedsTfa
+              width: parent.width
+              placeholderText: "6-digit code"
+              foreground: root.foreground
+              Keys.onReturnPressed: loginSubmit.clicked()
+            }
+
+            Text {
+              visible: seafile.loginError !== ""
+              width: parent.width
+              text: seafile.loginError
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+
+            Row {
+              spacing: Style.space(8)
+
+              Button {
+                id: loginSubmit
+                text: seafile.loginBusy ? "Logging in…" : "Log in"
+                iconText: ""
+                iconSpinning: seafile.loginBusy
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                bordered: true
+                onClicked: {
+                  if (seafile.loginBusy) return
+                  var server = loginServerField.text.trim()
+                  var username = loginUsernameField.text.trim()
+                  var password = loginPasswordField.text
+                  if (server === "" || username === "" || password === "") {
+                    seafile.loginError = "Server, username, and password are all required"
+                    return
+                  }
+                  seafile.login(server, username, password, loginTfaField.text.trim())
+                  loginPasswordField.text = ""
+                }
+              }
+
+              Button {
+                text: "Cancel"
+                foreground: root.dim
+                fontFamily: root.fontFamily
+                onClicked: root.goToLibraries()
               }
             }
           }
@@ -848,152 +965,6 @@ Panel {
       }
     }
   }
-
-  // A real top-level window, not an anchored bar dropdown: logging in often
-  // means switching away to copy a password from elsewhere (a password
-  // manager, a notes file) and back, and an anchored panel closes the
-  // instant it loses focus to that other window, wiping whatever was typed.
-  // A normal window survives alt-tabbing away and back like any other app.
-  FloatingWindow {
-    id: loginWindow
-    visible: false
-    title: "Log in to Seafile"
-    color: Color.background
-    implicitWidth: 380
-    implicitHeight: loginColumn.implicitHeight + Style.space(40)
-    minimumSize: Qt.size(340, 320)
-
-    onVisibleChanged: if (!visible) {
-      loginPasswordField.text = ""
-      loginTfaField.text = ""
-      seafile.loginError = ""
-    }
-
-    FocusScope {
-      anchors.fill: parent
-      focus: true
-
-      Column {
-        id: loginColumn
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.top: parent.top
-        anchors.margins: Style.space(20)
-        spacing: Style.space(10)
-
-        Text {
-          width: parent.width
-          text: "Server URL"
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-        }
-        TextField {
-          id: loginServerField
-          width: parent.width
-          placeholderText: "https://seafile.example.com"
-          text: seafile.accountServer
-          foreground: root.foreground
-          Keys.onReturnPressed: loginUsernameField.forceActiveFocus()
-        }
-
-        Text {
-          width: parent.width
-          text: "Username / email"
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-        }
-        TextField {
-          id: loginUsernameField
-          width: parent.width
-          placeholderText: "you@example.com"
-          text: seafile.accountUser
-          foreground: root.foreground
-          Keys.onReturnPressed: loginPasswordField.forceActiveFocus()
-        }
-
-        Text {
-          width: parent.width
-          text: "Password"
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-        }
-        TextField {
-          id: loginPasswordField
-          width: parent.width
-          password: true
-          foreground: root.foreground
-          Keys.onReturnPressed: {
-            if (seafile.loginNeedsTfa) loginTfaField.forceActiveFocus()
-            else loginSubmit.clicked()
-          }
-        }
-
-        Text {
-          visible: seafile.loginNeedsTfa
-          width: parent.width
-          text: "Two-factor code"
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-        }
-        TextField {
-          id: loginTfaField
-          visible: seafile.loginNeedsTfa
-          width: parent.width
-          placeholderText: "6-digit code"
-          foreground: root.foreground
-          Keys.onReturnPressed: loginSubmit.clicked()
-        }
-
-        Text {
-          visible: seafile.loginError !== ""
-          width: parent.width
-          text: seafile.loginError
-          color: root.urgent
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.bodySmall
-          wrapMode: Text.WordWrap
-        }
-
-        Row {
-          spacing: Style.space(8)
-
-          Button {
-            id: loginSubmit
-            text: seafile.loginBusy ? "Logging in\u2026" : "Log in"
-            iconText: "\uf090"
-            iconSpinning: seafile.loginBusy
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            bordered: true
-            onClicked: {
-              if (seafile.loginBusy) return
-              var server = loginServerField.text.trim()
-              var username = loginUsernameField.text.trim()
-              var password = loginPasswordField.text
-              if (server === "" || username === "" || password === "") {
-                seafile.loginError = "Server, username, and password are all required"
-                return
-              }
-              seafile.login(server, username, password, loginTfaField.text.trim())
-              loginPasswordField.text = ""
-            }
-          }
-
-          Button {
-            text: "Cancel"
-            foreground: root.dim
-            fontFamily: root.fontFamily
-            onClicked: loginWindow.visible = false
-          }
-        }
-      }
-    }
-  }
-
 
   component LibraryRow: CursorSurface {
     id: libraryRow

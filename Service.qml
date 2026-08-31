@@ -62,6 +62,21 @@ Item {
   readonly property bool active: _desired === -1 ? daemonRunning : (_desired === 1)
   readonly property bool busy: refreshProcess.running || controlProcess.running
 
+  // Auto-start seaf-daemon once per plugin load (i.e. once per session,
+  // since the bar loads this plugin at Hyprland startup) so syncing resumes
+  // on login the same way the real seafile-applet auto-connects, without
+  // requiring a manual toggle click every time. Only fires once installed +
+  // account state are both known and an account is actually linked -- an
+  // unconfigured widget has nothing to sync and should stay quiet.
+  property bool _autoStartAttempted: false
+  function maybeAutoStart() {
+    if (_autoStartAttempted) return
+    if (!installed || daemonRunning || !accountLinked) return
+    if (controlProcess.running) return
+    _autoStartAttempted = true
+    start()
+  }
+
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 30, 10, 3600)
 
   property string _refreshOutput: ""
@@ -216,6 +231,7 @@ Item {
     var merged = Model.mergeLibraries(parsed.list, parsed.status)
     notifyLibraryTransitions(merged)
     libraries = merged
+    maybeAutoStart()
   }
 
   // Desktop notification via notify-send -- picked up by the shell's own
@@ -312,6 +328,7 @@ Item {
     accountServer = String(parsed.server || "")
     accountUser = String(parsed.user || "")
     accountLinked = parsed.found === true
+    maybeAutoStart()
   }
 
   function login(server, username, password, tfa) {

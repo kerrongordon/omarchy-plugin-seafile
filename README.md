@@ -95,7 +95,10 @@ Click the bar icon to see your synced libraries. From there:
   and download/link one.
 - **Activity** — recent file changes across your libraries.
 - The small icon on each library row desyncs it (local files are kept).
-- The toggle switch in the header starts/stops the Seafile daemon.
+- The toggle switch in the header starts/stops the Seafile daemon. Once an
+  account is linked, the daemon also auto-starts the first time the widget
+  loads each session (e.g. at login) so syncing resumes without a manual
+  click, same as the desktop client.
 
 ## Configure
 

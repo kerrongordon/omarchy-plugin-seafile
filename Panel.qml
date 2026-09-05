@@ -38,6 +38,13 @@ Panel {
   readonly property string tone: Model.overallTone(seafile.libraries, seafile.installed, seafile.daemonRunning)
   readonly property string summary: Model.summaryText(seafile.libraries, seafile.installed, seafile.daemonRunning)
   readonly property color toneColor: tone === "error" ? urgent : (tone === "busy" ? Color.accent : foreground)
+
+  // A conflict (seaf-daemon's SYNC_ERROR_ID_CONFLICT / _CASE_CONFLICT) means
+  // both versions of the file already exist on disk -- there's a copy to go
+  // look at, not something broken -- so it's split out from genuine sync
+  // errors rather than lumped into the same alarming list.
+  readonly property var conflictEntries: seafile.syncErrors.filter(function(e) { return e.isConflict === true })
+  readonly property var errorEntries: seafile.syncErrors.filter(function(e) { return e.isConflict !== true })
   readonly property bool toneDim: tone === "dim"
   readonly property string toggleHint: seafile.active ? "Stop Seafile" : "Start Seafile"
 
@@ -542,6 +549,19 @@ Panel {
                 root.openLogin()
               }
             }
+          }
+
+          Text {
+            visible: root.viewMode === "libraries" && seafile.installed && seafile.accountLinked && seafile.accountUsageBytes >= 0
+            width: parent.width
+            text: seafile.accountQuotaBytes > 0
+              ? (Model.formatBytes(seafile.accountUsageBytes) + " of " + Model.formatBytes(seafile.accountQuotaBytes) + " used")
+              : (Model.formatBytes(seafile.accountUsageBytes) + " used")
+            textFormat: Text.PlainText
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
           }
 
           Row {
@@ -1075,12 +1095,44 @@ Panel {
               horizontalAlignment: Text.AlignHCenter
             }
 
+            // Conflicts mean both versions already exist on disk as separate
+            // files -- there's something to go look at, not a broken sync --
+            // so they get their own section instead of reading like errors.
             Column {
+              visible: root.conflictEntries.length > 0
               width: parent.width
               spacing: Style.space(10)
 
+              PanelSectionHeader {
+                text: "CONFLICTS (" + root.conflictEntries.length + ")"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+              }
+
               Repeater {
-                model: seafile.syncErrors
+                model: root.conflictEntries
+                SyncErrorRow {
+                  required property var modelData
+                  width: parent.width
+                  entry: modelData
+                }
+              }
+            }
+
+            Column {
+              visible: root.errorEntries.length > 0
+              width: parent.width
+              spacing: Style.space(10)
+
+              PanelSectionHeader {
+                visible: root.conflictEntries.length > 0
+                text: "SYNC ERRORS (" + root.errorEntries.length + ")"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+              }
+
+              Repeater {
+                model: root.errorEntries
                 SyncErrorRow {
                   required property var modelData
                   width: parent.width
@@ -1600,12 +1652,15 @@ Panel {
   component SyncErrorRow: RowLayout {
     id: syncErrorRow
     property var entry: null
+    readonly property bool isConflict: entry ? entry.isConflict === true : false
 
     spacing: Style.space(8)
 
     Text {
-      text: ""
-      color: root.urgent
+      // A conflict copy already exists to go look at, so it gets the
+      // fork/branch glyph and a neutral tone instead of the error triangle.
+      text: syncErrorRow.isConflict ? "\uf126" : "\uf071"
+      color: syncErrorRow.isConflict ? root.dim : root.urgent
       font.family: root.fontFamily
       font.pixelSize: Style.font.icon
       Layout.alignment: Qt.AlignTop

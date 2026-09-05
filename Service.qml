@@ -52,6 +52,11 @@ Item {
   property bool activityRefreshing: false
   property string activityError: ""
 
+  // -1 means "not loaded yet"; accountQuotaBytes <= 0 (once loaded) means
+  // the server has no quota configured, i.e. unlimited.
+  property real accountUsageBytes: -1
+  property real accountQuotaBytes: -1
+
   property var pathCompletions: []
 
   readonly property bool muteNotifications: setting("muteNotifications", false) === true
@@ -499,7 +504,12 @@ Item {
     } catch (e) { /* keep defaults */ }
     accountServer = String(parsed.server || "")
     accountUser = String(parsed.user || "")
+    var wasLinked = accountLinked
     accountLinked = parsed.found === true
+    if (wasLinked && !accountLinked) {
+      accountUsageBytes = -1
+      accountQuotaBytes = -1
+    }
     maybeAutoStart()
   }
 
@@ -637,6 +647,12 @@ Item {
     "  merged.sort(key=lambda e: e['ctime'], reverse=True)",
     "  print(json.dumps({'ok': True, 'entries': merged[:30]}))",
     "",
+    "def action_account_info(server, token):",
+    "  info = api_get(server + '/api2/account/info/', token)",
+    "  usage = info.get('usage', 0) or 0",
+    "  total = info.get('total', 0) or 0",
+    "  print(json.dumps({'ok': True, 'usage': usage, 'total': total}))",
+    "",
     "action = sys.argv[1]",
     "server, token = read_account(sys.argv[2])",
     "libpasswd = sys.stdin.readline().rstrip(chr(10)) if action in ('download', 'sync', 'create') else ''",
@@ -651,6 +667,8 @@ Item {
     "    action_create(server, token, sys.argv[3], sys.argv[4], libpasswd)",
     "  elif action == 'activity':",
     "    action_activity(server, token, sys.argv[3].split(',') if len(sys.argv) > 3 and sys.argv[3] else [])",
+    "  elif action == 'account_info':",
+    "    action_account_info(server, token)",
     "except urllib.error.HTTPError as e:",
     "  body = _read_capped(e, 65536).decode('utf-8', 'replace')",
     "  print(json.dumps({'ok': False, 'error': (body.strip() or ('HTTP %d' % e.code))[:500]}))",
@@ -735,7 +753,11 @@ Item {
     "      message = rpc.sync_error_id_to_str(e.err_id)",
     "    except Exception:",
     "      message = 'Sync error'",
-    "    out.append({'id': e.id, 'repo_id': e.repo_id, 'repo_name': _cap_str(e.repo_name, 300), 'path': _cap_str(e.path, 1000), 'message': _cap_str(message, 500), 'timestamp': e.timestamp})",
+    "    # 27 = SYNC_ERROR_ID_CONFLICT, 37 = SYNC_ERROR_ID_CASE_CONFLICT in",
+    "    # seafile's include/seafile-error.h -- both mean a second copy of",
+    "    # the file already exists to go look at, not a broken sync.",
+    "    is_conflict = e.err_id in (27, 37)",
+    "    out.append({'id': e.id, 'repo_id': e.repo_id, 'repo_name': _cap_str(e.repo_name, 300), 'path': _cap_str(e.path, 1000), 'message': _cap_str(message, 500), 'timestamp': e.timestamp, 'isConflict': is_conflict})",
     "  out.sort(key=lambda x: x['timestamp'], reverse=True)",
     "  print(json.dumps({'ok': True, 'errors': out}))",
     "",
@@ -936,6 +958,7 @@ Item {
     if (ids.length === 0) {
       activityEntries = []
       activityError = ""
+      refreshAccountInfo()
       return
     }
     activityRefreshing = true
@@ -952,6 +975,23 @@ Item {
       } else {
         activityEntries = []
         activityError = (result && result.error) || "Could not load activity."
+      }
+      // Shares remoteActionProcess with the activity fetch above rather than
+      // running concurrently -- quota changes rarely, so piggybacking on the
+      // same periodic cycle is plenty and keeps this to one process at a time.
+      refreshAccountInfo()
+    }
+    remoteActionProcess.running = true
+  }
+
+  function refreshAccountInfo() {
+    if (!accountLinked || remoteActionProcess.running) return
+    remoteActionProcess.command = ["python3", "-c", _remoteScript, "account_info", accountFile]
+    remoteActionProcess._pendingStdin = ""
+    remoteActionProcess._onDone = function(result) {
+      if (result && result.ok) {
+        accountUsageBytes = result.usage || 0
+        accountQuotaBytes = result.total || 0
       }
     }
     remoteActionProcess.running = true

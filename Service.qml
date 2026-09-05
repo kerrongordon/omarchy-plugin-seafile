@@ -96,13 +96,22 @@ Item {
   property string trashError: ""
   property string trashBusyPath: ""
 
+  // Server-side search across all libraries (Seahub's /api2/search/). Only
+  // works when the server is running Seafile Professional with a search
+  // backend configured -- a Community Edition server always 403s this
+  // endpoint, surfaced here as a normal searchError rather than a crash.
+  property var searchResults: []
+  property bool searchBusy: false
+  property string searchError: ""
+
   property var librarySizes: ({})
   property var librarySizeBusy: ({})
 
-  // repo id -> current transfer rate in KB/s, polled only while at least one
-  // library is actively busy (see transferRateTimer below) -- empty again
-  // the moment nothing is transferring, so a stale rate never lingers next
-  // to a library that has already settled.
+  // repo id -> {rate: KB/s, percent: 0-100}, either field may be absent
+  // (e.g. percent has nothing to divide by until block_total is known).
+  // Polled only while at least one library is actively busy (see
+  // transferRateTimer below) -- empty again the moment nothing is
+  // transferring, so a stale value never lingers next to a settled library.
   property var transferRates: ({})
 
   // Optimistic desired daemon state, so the toggle switch throws the instant
@@ -694,6 +703,20 @@ Item {
     "  else:",
     "    print(json.dumps({'ok': True}))",
     "",
+    "def action_search(server, token, query):",
+    "  url = '%s/api2/search/?q=%s&search_repo=all&per_page=30' % (server, urllib.parse.quote(query))",
+    "  result = api_get(url, token)",
+    "  items = []",
+    "  for r in (result.get('results') or [])[:30]:",
+    "    items.append({",
+    "      'repo_id': _cap_str(r.get('repo_id', ''), 100),",
+    "      'name': _cap_str(r.get('name', ''), 300),",
+    "      'path': _cap_str(r.get('fullpath', ''), 1000),",
+    "      'is_dir': bool(r.get('is_dir')),",
+    "      'size': r.get('size') or 0,",
+    "    })",
+    "  print(json.dumps({'ok': True, 'items': items}))",
+    "",
     "def action_activity(server, token, repo_ids):",
     "  merged = []",
     "  for repo_id in repo_ids[:200]:",
@@ -702,8 +725,13 @@ Item {
     "      data = api_get('%s/api2/repos/%s/history/?per_page=10' % (server, repo_id), token)",
     "    except Exception:",
     "      continue",
-    "    for c in data.get('commits', [])[:50]:",
-    "      merged.append({'id': _cap_str(c.get('id', ''), 100), 'repo_id': repo_id, 'desc': _cap_str((c.get('desc') or '').strip(), 2000), 'ctime': c.get('ctime', 0), 'creator_name': _cap_str(c.get('creator_name', ''), 200), 'device_name': _cap_str(c.get('device_name', ''), 200)})",
+    "    # Seahub's RepoHistory view (seahub/api2/endpoints/repo_history.py)",
+    "    # returns {'data': [...], 'more': bool} with commit_id/description/",
+    "    # time(ISO)/name fields -- not the commits/id/desc/ctime/creator_name",
+    "    # shape this used to assume, which silently produced zero entries",
+    "    # against a real server.",
+    "    for c in (data.get('data') or [])[:50]:",
+    "      merged.append({'id': _cap_str(c.get('commit_id', ''), 100), 'repo_id': repo_id, 'desc': _cap_str((c.get('description') or '').strip(), 2000), 'ctime': _iso_to_epoch(c.get('time', '')), 'creator_name': _cap_str(c.get('name', ''), 200), 'device_name': _cap_str(c.get('device_name', ''), 200)})",
     "  merged.sort(key=lambda e: e['ctime'], reverse=True)",
     "  print(json.dumps({'ok': True, 'entries': merged[:30]}))",
     "",
@@ -731,6 +759,8 @@ Item {
     "    action_trash_list(server, token, sys.argv[3])",
     "  elif action == 'trash_restore':",
     "    action_trash_restore(server, token, sys.argv[3], sys.argv[4], sys.argv[5])",
+    "  elif action == 'search':",
+    "    action_search(server, token, sys.argv[3])",
     "  elif action == 'activity':",
     "    action_activity(server, token, sys.argv[3].split(',') if len(sys.argv) > 3 and sys.argv[3] else [])",
     "  elif action == 'account_info':",
@@ -839,8 +869,16 @@ Item {
     "      task = rpc.find_transfer_task(repo_id)",
     "    except Exception:",
     "      task = None",
-    "    if task is not None and getattr(task, 'rate', None) is not None:",
-    "      out[repo_id] = round(task.rate / 1024.0, 1)",
+    "    if task is None: continue",
+    "    entry = {}",
+    "    if getattr(task, 'rate', None) is not None:",
+    "      entry['rate'] = round(task.rate / 1024.0, 1)",
+    "    block_total = getattr(task, 'block_total', 0) or 0",
+    "    block_done = getattr(task, 'block_done', 0) or 0",
+    "    if block_total > 0:",
+    "      entry['percent'] = round(block_done * 100.0 / block_total)",
+    "    if entry:",
+    "      out[repo_id] = entry",
     "  print(json.dumps({'ok': True, 'rates': out}))",
     "",
     "def action_dir_size(path):",
@@ -1204,6 +1242,33 @@ Item {
         var message = (result && result.error) || "Could not restore " + (name || path)
         trashError = message
         notify("Seafile", message, "critical")
+      }
+    }
+    remoteActionProcess.running = true
+  }
+
+  // ---- Search (account-wide, server-side) -----------------------------
+
+  function searchFiles(query) {
+    if (!accountLinked || remoteActionProcess.running) return
+    var q = String(query || "").trim()
+    if (q === "") {
+      searchResults = []
+      searchError = ""
+      return
+    }
+    searchBusy = true
+    searchError = ""
+    remoteActionProcess.command = ["python3", "-c", _remoteScript, "search", accountFile, q]
+    remoteActionProcess._pendingStdin = ""
+    remoteActionProcess._onDone = function(result) {
+      searchBusy = false
+      if (result && result.ok) {
+        searchError = ""
+        searchResults = result.items || []
+      } else {
+        searchResults = []
+        searchError = (result && result.error) || "Search failed"
       }
     }
     remoteActionProcess.running = true

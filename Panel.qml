@@ -19,7 +19,7 @@ Panel {
   ipcTarget: "io.github.kerrongordon.seafile"
   manageIpc: false
 
-  // "libraries" (default) | "login" | "browse" | "create" | "activity" | "errors" | "settings" | "trash"
+  // "libraries" (default) | "login" | "browse" | "create" | "activity" | "errors" | "settings" | "trash" | "search"
   property string viewMode: "libraries"
   property string focusSection: "header"
   property int libraryIndex: 0
@@ -175,6 +175,11 @@ Panel {
   function openActivity() {
     viewMode = "activity"
     seafile.refreshActivity()
+    Qt.callLater(function() { panelFlick.contentY = 0 })
+  }
+
+  function openSearch() {
+    viewMode = "search"
     Qt.callLater(function() { panelFlick.contentY = 0 })
   }
 
@@ -411,6 +416,7 @@ Panel {
                 : root.viewMode === "errors" ? "Sync errors"
                 : root.viewMode === "settings" ? "Settings"
                 : root.viewMode === "trash" ? ("Trash — " + root.trashRepoName)
+                : root.viewMode === "search" ? "Search"
                 : "Create a new library"
               foreground: root.foreground
               fontFamily: root.fontFamily
@@ -490,6 +496,16 @@ Panel {
               fontFamily: root.fontFamily
               bordered: true
               onClicked: root.openAddLibrary()
+            }
+
+            Button {
+              text: ""
+              iconText: "\uf002"
+              tooltipText: "Search"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              bordered: true
+              onClicked: root.openSearch()
             }
 
             Button {
@@ -1209,6 +1225,75 @@ Panel {
             }
           }
 
+          // ---- Search view ------------------------------------------------
+          // Server-side, account-wide (Seahub's /api2/search/) -- only works
+          // when the server runs Seafile Professional with a search backend
+          // configured. A Community Edition server rejects this outright,
+          // surfaced below as a plain searchError rather than a dead end.
+          Column {
+            visible: root.viewMode === "search"
+            width: parent.width
+            spacing: Style.space(10)
+
+            RowLayout {
+              width: parent.width
+              spacing: Style.space(8)
+
+              TextField {
+                id: searchField
+                Layout.fillWidth: true
+                placeholderText: "Search all libraries…"
+                foreground: root.foreground
+                Keys.onReturnPressed: seafile.searchFiles(searchField.text)
+              }
+
+              Button {
+                text: seafile.searchBusy ? "Searching…" : "Search"
+                iconText: "\uf021"
+                iconSpinning: seafile.searchBusy
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                bordered: true
+                onClicked: seafile.searchFiles(searchField.text)
+              }
+            }
+
+            Text {
+              visible: seafile.searchError !== ""
+              width: parent.width
+              text: seafile.searchError
+              textFormat: Text.PlainText
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              visible: !seafile.searchBusy && seafile.searchError === "" && seafile.searchResults.length === 0
+              width: parent.width
+              text: "Type a query and press Enter."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              horizontalAlignment: Text.AlignHCenter
+            }
+
+            Column {
+              width: parent.width
+              spacing: Style.space(10)
+
+              Repeater {
+                model: seafile.searchResults
+                SearchResultRow {
+                  required property var modelData
+                  width: parent.width
+                  entry: modelData
+                }
+              }
+            }
+          }
+
           // ---- Settings view ---------------------------------------------
           Column {
             visible: root.viewMode === "settings"
@@ -1491,7 +1576,17 @@ Panel {
     property int rowIndex: 0
     readonly property string libraryName: library ? String(library.name || "Untitled") : "Untitled"
     readonly property var meta: Model.stateMeta(library ? library.state : "")
-    readonly property var rateKBps: (library && meta.tone === "busy") ? seafile.transferRates[library.id] : undefined
+    readonly property var transferInfo: (library && meta.tone === "busy") ? seafile.transferRates[library.id] : undefined
+
+    // "62% · 48.3 KB/s", or just one of the two, or "" once there's nothing
+    // to report yet (e.g. seaf-daemon hasn't sized the transfer up yet).
+    function rateLabel() {
+      if (transferInfo === undefined) return ""
+      var parts = []
+      if (transferInfo.percent !== undefined) parts.push(transferInfo.percent + "%")
+      if (transferInfo.rate !== undefined) parts.push(transferInfo.rate + " KB/s")
+      return parts.join(" · ")
+    }
 
     hasCursor: root.cursorActive && root.focusSection === "libraries" && root.libraryIndex === rowIndex
     foreground: root.foreground
@@ -1540,7 +1635,7 @@ Panel {
         Text {
           Layout.fillWidth: true
           text: libraryRow.meta.label
-            + (libraryRow.rateKBps !== undefined ? " \u00b7 " + libraryRow.rateKBps + " KB/s" : "")
+            + (libraryRow.rateLabel() !== "" ? " \u00b7 " + libraryRow.rateLabel() : "")
             + (libraryRow.library && libraryRow.library.path ? " \u00b7 " + libraryRow.library.path : "")
           textFormat: Text.PlainText
           color: root.dim
@@ -1618,6 +1713,7 @@ Panel {
     property bool linked: false
     readonly property string remoteName: remoteLib ? String(remoteLib.name || "Untitled") : "Untitled"
     readonly property bool encrypted: remoteLib ? remoteLib.encrypted === true : false
+    readonly property bool readOnly: remoteLib ? remoteLib.permission === "r" : false
 
     implicitHeight: remoteRowContent.implicitHeight + Style.space(8)
 
@@ -1631,6 +1727,16 @@ Panel {
       Text {
         visible: remoteRow.encrypted
         text: ""
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        Layout.alignment: Qt.AlignVCenter
+      }
+
+      Text {
+        visible: remoteRow.readOnly
+        text: "Read-only"
+        textFormat: Text.PlainText
         color: root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
@@ -1744,6 +1850,20 @@ Panel {
         elide: Text.ElideRight
       }
     }
+
+    // The history API this feed is built from (see Service.qml's
+    // action_activity) only gives a commit description, not the specific
+    // file's path, so this can only jump to the library itself in Seahub --
+    // not deep-link to the exact changed file.
+    PanelActionButton {
+      visible: activityRow.entry && seafile.accountLinked
+      iconText: "\uf14c"
+      tooltipText: "Open in Seahub"
+      foreground: root.dim
+      fontFamily: root.fontFamily
+      Layout.alignment: Qt.AlignVCenter
+      onClicked: root.openInSeahub(activityRow.entry.repo_id, activityRow.libraryLabel)
+    }
   }
 
   component SyncErrorRow: RowLayout {
@@ -1849,6 +1969,63 @@ Panel {
       enabled: !trashItemRow.busy
       Layout.alignment: Qt.AlignVCenter
       onClicked: seafile.restoreTrashItem(trashItemRow.repoId, trashItemRow.entry.commit_id, trashItemRow.entry.path, trashItemRow.entry.name)
+    }
+  }
+
+  component SearchResultRow: RowLayout {
+    id: searchResultRow
+    property var entry: null
+    // Search results only carry a repo_id -- resolved against locally
+    // synced libraries when possible, otherwise just shown as-is; there's
+    // no extra API call made per-result just to look up a library name.
+    readonly property string libraryLabel: entry ? Model.libraryName(seafile.libraries, entry.repo_id) : ""
+
+    spacing: Style.space(8)
+
+    Text {
+      text: searchResultRow.entry && searchResultRow.entry.is_dir ? "\uf114" : "\uf016"
+      color: root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.icon
+      Layout.alignment: Qt.AlignTop
+    }
+
+    ColumnLayout {
+      Layout.fillWidth: true
+      spacing: Style.space(1)
+
+      Text {
+        Layout.fillWidth: true
+        text: searchResultRow.entry ? searchResultRow.entry.name : ""
+        textFormat: Text.PlainText
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        elide: Text.ElideMiddle
+      }
+
+      Text {
+        Layout.fillWidth: true
+        text: searchResultRow.entry
+          ? (searchResultRow.libraryLabel + " \u00b7 " + searchResultRow.entry.path
+             + (searchResultRow.entry.is_dir ? "" : " \u00b7 " + Model.formatBytes(searchResultRow.entry.size)))
+          : ""
+        textFormat: Text.PlainText
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideMiddle
+      }
+    }
+
+    PanelActionButton {
+      visible: seafile.accountLinked
+      iconText: "\uf14c"
+      tooltipText: "Open in Seahub"
+      foreground: root.dim
+      fontFamily: root.fontFamily
+      Layout.alignment: Qt.AlignVCenter
+      onClicked: root.openInSeahub(searchResultRow.entry.repo_id, searchResultRow.libraryLabel)
     }
   }
 }

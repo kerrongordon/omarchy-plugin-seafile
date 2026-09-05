@@ -410,22 +410,36 @@ Item {
   // one-shot state so it only fires on the transition, not every poll while
   // already settled -- and nothing fires on the very first refresh after the
   // plugin loads, since there is no prior tone yet to compare against.
+  //
+  // Error notifications additionally require the error tone to survive two
+  // consecutive polls before firing. Waking the machine from sleep is the
+  // common case this guards against: seaf-daemon hasn't reconnected yet on
+  // the very first poll after resume, so a library can read "error" for
+  // exactly one cycle before recovering on its own a refresh later -- that
+  // one-cycle blip should never have reached the user as a critical toast.
   property var _lastLibraryTones: ({})
+  property var _errorStreak: ({})
   function notifyLibraryTransitions(newLibraries) {
     var nextTones = {}
+    var nextStreak = {}
     for (var i = 0; i < newLibraries.length; i++) {
       var lib = newLibraries[i]
       var meta = Model.stateMeta(lib.state)
       nextTones[lib.id] = meta.tone
       var prevTone = _lastLibraryTones[lib.id]
-      if (prevTone === undefined || prevTone === meta.tone) continue
-      if (meta.tone === "ok" && prevTone === "busy") {
+
+      if (meta.tone === "error") {
+        var streak = (_errorStreak[lib.id] || 0) + 1
+        nextStreak[lib.id] = streak
+        if (streak === 2) notify(lib.name + " sync error", meta.label, "critical")
+        continue
+      }
+      if (prevTone === "busy" && meta.tone === "ok") {
         notify(lib.name + " is synchronized", "", "normal")
-      } else if (meta.tone === "error") {
-        notify(lib.name + " sync error", meta.label, "critical")
       }
     }
     _lastLibraryTones = nextTones
+    _errorStreak = nextStreak
   }
 
   function start() { runControl(["seaf-cli", "start"], 1) }

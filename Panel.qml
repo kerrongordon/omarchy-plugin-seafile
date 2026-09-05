@@ -23,7 +23,23 @@ Panel {
   property string viewMode: "libraries"
   property string focusSection: "header"
   property int libraryIndex: 0
+  property int searchIndex: 0
   property bool cursorActive: false
+
+  // Without this, PanelKeyCatcher's Keys.priority: BeforeItem means it
+  // intercepts h/j/k/l/space/arrows/Return *before* whichever TextField
+  // currently has focus ever sees them -- so typing "hello" into any field
+  // below would silently lose the h, arrow keys wouldn't move the text
+  // cursor, space wouldn't insert, etc. Every TextField in every view is
+  // listed here; the key catcher is `blocked` (see keyCatcher below)
+  // whenever any one of them has activeFocus.
+  readonly property bool anyTextFieldFocused:
+    loginServerField.activeFocus || loginUsernameField.activeFocus || loginPasswordField.activeFocus || loginTfaField.activeFocus ||
+    folderField.activeFocus || libPasswordField.activeFocus ||
+    createNameField.activeFocus || createDescField.activeFocus || createPasswordField.activeFocus ||
+    searchField.activeFocus ||
+    clientNameField.activeFocus || uploadLimitField.activeFocus || downloadLimitField.activeFocus || deleteConfirmField.activeFocus ||
+    proxyAddrField.activeFocus || proxyPortField.activeFocus || proxyUsernameField.activeFocus || proxyPasswordField.activeFocus
 
   // Which library's trash is currently open -- trash is per-library on the
   // server, unlike activity/errors which are account-wide, so this view
@@ -72,6 +88,12 @@ Panel {
 
   function moveCursor(dx, dy) {
     cursorActive = true
+    if (root.viewMode === "search") {
+      if (dy === 0 || seafile.searchResults.length === 0) return
+      searchIndex = Math.max(0, Math.min(seafile.searchResults.length - 1, searchIndex + dy))
+      scrollSearchCursorIntoView()
+      return
+    }
     ensureCursor()
     if (dy === 0 || root.viewMode !== "libraries") return
     if (focusSection === "header") {
@@ -105,7 +127,18 @@ Panel {
     scrollCursorIntoView()
   }
 
+  function setSearchCursor(index) {
+    cursorActive = true
+    searchIndex = index
+    scrollSearchCursorIntoView()
+  }
+
   function activateCursor() {
+    if (root.viewMode === "search") {
+      var entry = selectedSearchResult()
+      if (entry) activateSearchResult(entry)
+      return
+    }
     if (root.viewMode !== "libraries") return
     ensureCursor()
     if (focusSection === "header") toggleDaemon()
@@ -115,6 +148,31 @@ Panel {
   function selectedLibrary() {
     if (seafile.libraries.length === 0) return null
     return seafile.libraries[Math.max(0, Math.min(libraryIndex, seafile.libraries.length - 1))]
+  }
+
+  function selectedSearchResult() {
+    if (seafile.searchResults.length === 0) return null
+    return seafile.searchResults[Math.max(0, Math.min(searchIndex, seafile.searchResults.length - 1))]
+  }
+
+  // Same default action a click on the row's primary button would take:
+  // straight to disk if the repo is already synced locally, otherwise out
+  // to Seahub -- see SearchResultRow's localPath.
+  function activateSearchResult(entry) {
+    var local = seafile.libraries.find(function(l) { return l.id === entry.repo_id })
+    if (local) seafile.openLocalPath(local.path + entry.path)
+    else openInSeahub(entry.repo_id, Model.libraryName(seafile.libraries, entry.repo_id))
+  }
+
+  function runSearch() {
+    searchIndex = 0
+    cursorActive = true
+    seafile.searchFiles(searchField.text)
+    // Moves activeFocus off the field so arrow keys immediately start
+    // browsing results instead of editing the query -- otherwise the key
+    // catcher stays `blocked` (see keyCatcher.blocked below) and nothing
+    // the user presses reaches moveCursor()/activateCursor() at all.
+    keyCatcher.forceActiveFocus()
   }
 
   function toggleDaemon() {
@@ -140,6 +198,12 @@ Panel {
   function scrollCursorIntoView() {
     if (focusSection === "libraries" && libraryColumn && libraryIndex >= 0 && libraryIndex < libraryColumn.children.length) {
       scrollItemIntoView(libraryColumn.children[libraryIndex])
+    }
+  }
+
+  function scrollSearchCursorIntoView() {
+    if (searchResultsColumn && searchIndex >= 0 && searchIndex < searchResultsColumn.children.length) {
+      scrollItemIntoView(searchResultsColumn.children[searchIndex])
     }
   }
 
@@ -365,6 +429,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      blocked: root.anyTextFieldFocused
       onMoveRequested: function(dx, dy) {
         if (!root.cursorActive) { root.cursorActive = true; return }
         root.moveCursor(dx, dy)
@@ -1244,7 +1309,7 @@ Panel {
                 Layout.fillWidth: true
                 placeholderText: "Search all libraries…"
                 foreground: root.foreground
-                Keys.onReturnPressed: seafile.searchFiles(searchField.text)
+                Keys.onReturnPressed: root.runSearch()
               }
 
               Button {
@@ -1254,7 +1319,7 @@ Panel {
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 bordered: true
-                onClicked: seafile.searchFiles(searchField.text)
+                onClicked: root.runSearch()
               }
             }
 
@@ -1280,6 +1345,7 @@ Panel {
             }
 
             Column {
+              id: searchResultsColumn
               width: parent.width
               spacing: Style.space(10)
 
@@ -1287,8 +1353,10 @@ Panel {
                 model: seafile.searchResults
                 SearchResultRow {
                   required property var modelData
-                  width: parent.width
+                  required property int index
+                  width: searchResultsColumn.width
                   entry: modelData
+                  rowIndex: index
                 }
               }
             }
@@ -1972,9 +2040,10 @@ Panel {
     }
   }
 
-  component SearchResultRow: RowLayout {
+  component SearchResultRow: CursorSurface {
     id: searchResultRow
     property var entry: null
+    property int rowIndex: 0
     // Search results only carry a repo_id -- resolved against locally
     // synced libraries when possible, otherwise just shown as-is; there's
     // no extra API call made per-result just to look up a library name.
@@ -1986,62 +2055,83 @@ Panel {
     readonly property var localLibrary: entry ? seafile.libraries.find(function(l) { return l.id === entry.repo_id }) : undefined
     readonly property string localPath: (localLibrary && entry) ? (localLibrary.path + entry.path) : ""
 
-    spacing: Style.space(8)
+    hasCursor: root.cursorActive && root.viewMode === "search" && root.searchIndex === rowIndex
+    foreground: root.foreground
 
-    Text {
-      text: searchResultRow.entry && searchResultRow.entry.is_dir ? "\uf114" : "\uf016"
-      color: root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.icon
-      Layout.alignment: Qt.AlignTop
+    implicitHeight: searchRowContent.implicitHeight + Style.spacing.rowPaddingX
+
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onEntered: root.setSearchCursor(searchResultRow.rowIndex)
+      onClicked: if (searchResultRow.entry) root.activateSearchResult(searchResultRow.entry)
     }
 
-    ColumnLayout {
-      Layout.fillWidth: true
-      spacing: Style.space(1)
+    RowLayout {
+      id: searchRowContent
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.space(10)
+      anchors.rightMargin: Style.space(10)
+      spacing: Style.space(8)
 
       Text {
-        Layout.fillWidth: true
-        text: searchResultRow.entry ? searchResultRow.entry.name : ""
-        textFormat: Text.PlainText
-        color: root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.body
-        elide: Text.ElideMiddle
-      }
-
-      Text {
-        Layout.fillWidth: true
-        text: searchResultRow.entry
-          ? (searchResultRow.libraryLabel + " \u00b7 " + searchResultRow.entry.path
-             + (searchResultRow.entry.is_dir ? "" : " \u00b7 " + Model.formatBytes(searchResultRow.entry.size)))
-          : ""
-        textFormat: Text.PlainText
+        text: searchResultRow.entry && searchResultRow.entry.is_dir ? "\uf114" : "\uf016"
         color: root.dim
         font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-        elide: Text.ElideMiddle
+        font.pixelSize: Style.font.icon
+        Layout.alignment: Qt.AlignTop
       }
-    }
 
-    PanelActionButton {
-      visible: searchResultRow.localPath !== ""
-      iconText: "\uf07c"
-      tooltipText: "Open locally"
-      foreground: root.dim
-      fontFamily: root.fontFamily
-      Layout.alignment: Qt.AlignVCenter
-      onClicked: seafile.openLocalPath(searchResultRow.localPath)
-    }
+      ColumnLayout {
+        Layout.fillWidth: true
+        spacing: Style.space(1)
 
-    PanelActionButton {
-      visible: seafile.accountLinked
-      iconText: "\uf14c"
-      tooltipText: "Open in Seahub"
-      foreground: root.dim
-      fontFamily: root.fontFamily
-      Layout.alignment: Qt.AlignVCenter
-      onClicked: root.openInSeahub(searchResultRow.entry.repo_id, searchResultRow.libraryLabel)
+        Text {
+          Layout.fillWidth: true
+          text: searchResultRow.entry ? searchResultRow.entry.name : ""
+          textFormat: Text.PlainText
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          elide: Text.ElideMiddle
+        }
+
+        Text {
+          Layout.fillWidth: true
+          text: searchResultRow.entry
+            ? (searchResultRow.libraryLabel + " · " + searchResultRow.entry.path
+               + (searchResultRow.entry.is_dir ? "" : " · " + Model.formatBytes(searchResultRow.entry.size)))
+            : ""
+          textFormat: Text.PlainText
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideMiddle
+        }
+      }
+
+      PanelActionButton {
+        visible: searchResultRow.localPath !== ""
+        iconText: "\uf07c"
+        tooltipText: "Open locally"
+        foreground: root.dim
+        fontFamily: root.fontFamily
+        Layout.alignment: Qt.AlignVCenter
+        onClicked: seafile.openLocalPath(searchResultRow.localPath)
+      }
+
+      PanelActionButton {
+        visible: seafile.accountLinked
+        iconText: "\uf14c"
+        tooltipText: "Open in Seahub"
+        foreground: root.dim
+        fontFamily: root.fontFamily
+        Layout.alignment: Qt.AlignVCenter
+        onClicked: root.openInSeahub(searchResultRow.entry.repo_id, searchResultRow.libraryLabel)
+      }
     }
   }
 }

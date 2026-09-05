@@ -91,8 +91,19 @@ Item {
   property bool syncErrorsRefreshing: false
   property string syncErrorsError: ""
 
+  property var trashItems: []
+  property bool trashRefreshing: false
+  property string trashError: ""
+  property string trashBusyPath: ""
+
   property var librarySizes: ({})
   property var librarySizeBusy: ({})
+
+  // repo id -> current transfer rate in KB/s, polled only while at least one
+  // library is actively busy (see transferRateTimer below) -- empty again
+  // the moment nothing is transferring, so a stale rate never lingers next
+  // to a library that has already settled.
+  property var transferRates: ({})
 
   // Optimistic desired daemon state, so the toggle switch throws the instant
   // you click it instead of waiting for seaf-daemon to actually settle.
@@ -392,6 +403,17 @@ Item {
     libraries = merged
     maybeAutoStart()
     if (daemonRunning) refreshSyncErrors()
+
+    var hasBusy = false
+    for (var i = 0; i < merged.length; i++) {
+      if (Model.stateMeta(merged[i].state).tone === "busy") { hasBusy = true; break }
+    }
+    if (hasBusy) {
+      transferRateTimer.restart()
+    } else {
+      transferRateTimer.stop()
+      if (Object.keys(transferRates).length > 0) transferRates = {}
+    }
   }
 
   // Desktop notification via notify-send -- picked up by the shell's own
@@ -567,6 +589,7 @@ Item {
   // stay on plain seaf-cli since those never touch the network.
   readonly property string _remoteScript: _pyHttp + "\n" + [
     "import sys, os, json, configparser",
+    "from datetime import datetime",
     "UA = 'Seafile Desktop Client (Omarchy plugin)'",
     "MAX_BYTES = 4 * 1024 * 1024",
     "",
@@ -634,6 +657,43 @@ Item {
     "  result = api_post(server + '/api2/repos/', token, data)",
     "  print(json.dumps({'ok': True, 'id': result.get('repo_id', '')}))",
     "",
+    "def action_share_link(server, token, repo_id, path):",
+    "  result = api_post(server + '/api/v2.1/share-links/', token, {'repo_id': repo_id, 'path': path})",
+    "  link = result.get('link', '')",
+    "  if not link:",
+    "    print(json.dumps({'ok': False, 'error': 'Server did not return a share link'}))",
+    "  else:",
+    "    print(json.dumps({'ok': True, 'link': _cap_str(link, 2000)}))",
+    "",
+    "def _iso_to_epoch(s):",
+    "  try:",
+    "    return int(datetime.fromisoformat(s.replace('Z', '+00:00')).timestamp())",
+    "  except Exception:",
+    "    return 0",
+    "",
+    "def action_trash_list(server, token, repo_id):",
+    "  result = api_get('%s/api2/repos/%s/trash/' % (server, repo_id), token)",
+    "  items = []",
+    "  for item in result.get('data', [])[:200]:",
+    "    parent = (item.get('parent_dir') or '/').rstrip('/')",
+    "    items.append({",
+    "      'path': parent + '/' + item.get('obj_name', ''),",
+    "      'name': _cap_str(item.get('obj_name', ''), 300),",
+    "      'is_dir': bool(item.get('is_dir')),",
+    "      'size': item.get('size') or 0,",
+    "      'deleted_time': _iso_to_epoch(item.get('deleted_time', '')),",
+    "      'commit_id': _cap_str(item.get('commit_id', ''), 100),",
+    "    })",
+    "  print(json.dumps({'ok': True, 'items': items}))",
+    "",
+    "def action_trash_restore(server, token, repo_id, commit_id, path):",
+    "  result = api_post('%s/api2/repos/%s/trash/dirents/revert/' % (server, repo_id), token, {'path': path, 'commit_id': commit_id})",
+    "  failed = result.get('failed') or []",
+    "  if failed:",
+    "    print(json.dumps({'ok': False, 'error': _cap_str(failed[0].get('error_msg', 'Restore failed'), 500)}))",
+    "  else:",
+    "    print(json.dumps({'ok': True}))",
+    "",
     "def action_activity(server, token, repo_ids):",
     "  merged = []",
     "  for repo_id in repo_ids[:200]:",
@@ -665,6 +725,12 @@ Item {
     "    action_clone(action, server, token, sys.argv[3], sys.argv[4], libpasswd)",
     "  elif action == 'create':",
     "    action_create(server, token, sys.argv[3], sys.argv[4], libpasswd)",
+    "  elif action == 'share_link':",
+    "    action_share_link(server, token, sys.argv[3], sys.argv[4])",
+    "  elif action == 'trash_list':",
+    "    action_trash_list(server, token, sys.argv[3])",
+    "  elif action == 'trash_restore':",
+    "    action_trash_restore(server, token, sys.argv[3], sys.argv[4], sys.argv[5])",
     "  elif action == 'activity':",
     "    action_activity(server, token, sys.argv[3].split(',') if len(sys.argv) > 3 and sys.argv[3] else [])",
     "  elif action == 'account_info':",
@@ -765,6 +831,18 @@ Item {
     "  rpc.del_file_sync_error_by_id(error_id)",
     "  print(json.dumps({'ok': True}))",
     "",
+    "def action_transfer_rates(rpc, repo_ids):",
+    "  out = {}",
+    "  for repo_id in repo_ids[:100]:",
+    "    if not repo_id: continue",
+    "    try:",
+    "      task = rpc.find_transfer_task(repo_id)",
+    "    except Exception:",
+    "      task = None",
+    "    if task is not None and getattr(task, 'rate', None) is not None:",
+    "      out[repo_id] = round(task.rate / 1024.0, 1)",
+    "  print(json.dumps({'ok': True, 'rates': out}))",
+    "",
     "def action_dir_size(path):",
     "  deadline = time.monotonic() + 20",
     "  max_entries = 200000",
@@ -802,6 +880,8 @@ Item {
     "      action_sync_errors(rpc, int(sys.argv[2]), int(sys.argv[3]))",
     "    elif action == 'clear_sync_error':",
     "      action_clear_sync_error(rpc, int(sys.argv[2]))",
+    "    elif action == 'transfer_rates':",
+    "      action_transfer_rates(rpc, sys.argv[2].split(',') if len(sys.argv) > 2 and sys.argv[2] else [])",
     "except Exception as e:",
     "  print(json.dumps({'ok': False, 'error': str(e)[:500]}))"
   ].join("\n")
@@ -928,6 +1008,25 @@ Item {
     localActionProcess.running = true
   }
 
+  // Polled by transferRateTimer only while at least one library is busy
+  // (see applyRefresh) -- shares localActionProcess with everything else in
+  // this file, so a poll due while a settings save or size calc is already
+  // running just gets skipped; the next tick a few seconds later catches up.
+  function refreshTransferRates() {
+    if (localActionProcess.running) return
+    var busyIds = []
+    for (var i = 0; i < libraries.length; i++) {
+      if (Model.stateMeta(libraries[i].state).tone === "busy") busyIds.push(libraries[i].id)
+    }
+    if (busyIds.length === 0) return
+    localActionProcess.command = ["python3", "-c", _localScript, "transfer_rates", busyIds.join(",")]
+    localActionProcess._pendingStdin = ""
+    localActionProcess._onDone = function(result) {
+      if (result && result.ok) transferRates = result.rates || {}
+    }
+    localActionProcess.running = true
+  }
+
   function refreshRemote() {
     if (!accountLinked || remoteActionProcess.running) return
     remoteRefreshing = true
@@ -1042,6 +1141,74 @@ Item {
     runRemoteAction(["create", accountFile, name, desc || ""], libPasswd, "Creating " + name + "…", "Created library \"" + name + "\"")
   }
 
+  // Links a whole library ("/" as the path -- there's no in-widget file
+  // browser to reach a specific file/folder inside one) via Seahub's
+  // share-links API, and copies the result straight to the clipboard rather
+  // than showing it in a dialog, so this is a single click from a library
+  // row to something pasteable.
+  function copyShareLink(repoId, name) {
+    if (remoteActionProcess.running) return
+    actionStatus = "Getting share link…"
+    lastError = ""
+    remoteActionProcess.command = ["python3", "-c", _remoteScript, "share_link", accountFile, repoId, "/"]
+    remoteActionProcess._pendingStdin = ""
+    remoteActionProcess._onDone = function(result) {
+      if (result && result.ok && result.link) {
+        lastError = ""
+        actionStatus = ""
+        Quickshell.execDetached(["wl-copy", result.link])
+        notify("Seafile", "Share link for " + (name || "library") + " copied to clipboard", "normal")
+      } else {
+        lastError = (result && result.error) || "Could not create a share link"
+        actionStatus = lastError
+        notify("Seafile", lastError, "critical")
+      }
+      actionStatusTimer.restart()
+    }
+    remoteActionProcess.running = true
+  }
+
+  // ---- Trash (per-library, server-side) ------------------------------
+
+  function refreshTrash(repoId) {
+    if (!accountLinked || remoteActionProcess.running) return
+    trashRefreshing = true
+    trashError = ""
+    remoteActionProcess.command = ["python3", "-c", _remoteScript, "trash_list", accountFile, repoId]
+    remoteActionProcess._pendingStdin = ""
+    remoteActionProcess._onDone = function(result) {
+      trashRefreshing = false
+      if (result && result.ok) {
+        trashError = ""
+        trashItems = result.items || []
+      } else {
+        trashItems = []
+        trashError = (result && result.error) || "Could not read trash"
+      }
+    }
+    remoteActionProcess.running = true
+  }
+
+  function restoreTrashItem(repoId, commitId, path, name) {
+    if (remoteActionProcess.running) return
+    trashBusyPath = path
+    remoteActionProcess.command = ["python3", "-c", _remoteScript, "trash_restore", accountFile, repoId, commitId, path]
+    remoteActionProcess._pendingStdin = ""
+    remoteActionProcess._onDone = function(result) {
+      trashBusyPath = ""
+      if (result && result.ok) {
+        notify("Seafile", (name || path) + " restored", "normal")
+        refreshTrash(repoId)
+        delayedRefresh.restart()
+      } else {
+        var message = (result && result.error) || "Could not restore " + (name || path)
+        trashError = message
+        notify("Seafile", message, "critical")
+      }
+    }
+    remoteActionProcess.running = true
+  }
+
   function runRemoteAction(args, libPasswd, statusMessage, successMessage) {
     if (remoteActionProcess.running) return
     actionStatus = statusMessage
@@ -1125,6 +1292,19 @@ Item {
     interval: 2600
     repeat: false
     onTriggered: root.actionStatus = ""
+  }
+
+  // Started/stopped from applyRefresh() based on whether any library is
+  // currently busy -- runs at a much tighter interval than the main
+  // refreshTimer so the displayed rate actually looks live, and stops
+  // itself the moment nothing is transferring rather than polling forever.
+  Timer {
+    id: transferRateTimer
+    interval: 3000
+    repeat: true
+    running: false
+    triggeredOnStart: true
+    onTriggered: root.refreshTransferRates()
   }
 
   // Every Process below pairs with a watchdog Timer: if the child hasn't

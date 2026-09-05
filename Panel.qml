@@ -19,11 +19,17 @@ Panel {
   ipcTarget: "io.github.kerrongordon.seafile"
   manageIpc: false
 
-  // "libraries" (default) | "login" | "browse" | "create" | "activity" | "errors" | "settings"
+  // "libraries" (default) | "login" | "browse" | "create" | "activity" | "errors" | "settings" | "trash"
   property string viewMode: "libraries"
   property string focusSection: "header"
   property int libraryIndex: 0
   property bool cursorActive: false
+
+  // Which library's trash is currently open -- trash is per-library on the
+  // server, unlike activity/errors which are account-wide, so this view
+  // needs its own bit of context to know which repo to ask about.
+  property string trashRepoId: ""
+  property string trashRepoName: ""
 
   // The remote library currently being downloaded / linked, while the
   // inline folder-target form is open. Cleared when that form closes.
@@ -219,6 +225,14 @@ Panel {
     Qt.callLater(function() { panelFlick.contentY = 0 })
   }
 
+  function openTrash(repoId, repoName) {
+    trashRepoId = repoId
+    trashRepoName = repoName || "Library"
+    viewMode = "trash"
+    seafile.refreshTrash(repoId)
+    Qt.callLater(function() { panelFlick.contentY = 0 })
+  }
+
   function startLibraryAction(remoteLib, mode) {
     pendingLibrary = remoteLib
     pendingMode = mode
@@ -396,6 +410,7 @@ Panel {
                 : root.viewMode === "activity" ? "Recent activity"
                 : root.viewMode === "errors" ? "Sync errors"
                 : root.viewMode === "settings" ? "Settings"
+                : root.viewMode === "trash" ? ("Trash — " + root.trashRepoName)
                 : "Create a new library"
               foreground: root.foreground
               fontFamily: root.fontFamily
@@ -1142,6 +1157,58 @@ Panel {
             }
           }
 
+          // ---- Trash view -------------------------------------------------
+          Column {
+            visible: root.viewMode === "trash"
+            width: parent.width
+            spacing: Style.space(10)
+
+            Button {
+              text: seafile.trashRefreshing ? "Refreshing…" : "Refresh"
+              iconText: ""
+              iconSpinning: seafile.trashRefreshing
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: seafile.refreshTrash(root.trashRepoId)
+            }
+
+            Text {
+              visible: seafile.trashError !== ""
+              width: parent.width
+              text: seafile.trashError
+              textFormat: Text.PlainText
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              visible: !seafile.trashRefreshing && seafile.trashError === "" && seafile.trashItems.length === 0
+              width: parent.width
+              text: "Trash is empty."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              horizontalAlignment: Text.AlignHCenter
+            }
+
+            Column {
+              width: parent.width
+              spacing: Style.space(10)
+
+              Repeater {
+                model: seafile.trashItems
+                TrashItemRow {
+                  required property var modelData
+                  width: parent.width
+                  entry: modelData
+                  repoId: root.trashRepoId
+                }
+              }
+            }
+          }
+
           // ---- Settings view ---------------------------------------------
           Column {
             visible: root.viewMode === "settings"
@@ -1424,6 +1491,7 @@ Panel {
     property int rowIndex: 0
     readonly property string libraryName: library ? String(library.name || "Untitled") : "Untitled"
     readonly property var meta: Model.stateMeta(library ? library.state : "")
+    readonly property var rateKBps: (library && meta.tone === "busy") ? seafile.transferRates[library.id] : undefined
 
     hasCursor: root.cursorActive && root.focusSection === "libraries" && root.libraryIndex === rowIndex
     foreground: root.foreground
@@ -1472,6 +1540,7 @@ Panel {
         Text {
           Layout.fillWidth: true
           text: libraryRow.meta.label
+            + (libraryRow.rateKBps !== undefined ? " \u00b7 " + libraryRow.rateKBps + " KB/s" : "")
             + (libraryRow.library && libraryRow.library.path ? " \u00b7 " + libraryRow.library.path : "")
           textFormat: Text.PlainText
           color: root.dim
@@ -1510,6 +1579,26 @@ Panel {
         fontFamily: root.fontFamily
         Layout.alignment: Qt.AlignVCenter
         onClicked: root.openInSeahub(libraryRow.library.id, libraryRow.library.name)
+      }
+
+      PanelActionButton {
+        visible: libraryRow.library && seafile.accountLinked
+        iconText: "\uf1e0"
+        tooltipText: "Copy share link"
+        foreground: root.dim
+        fontFamily: root.fontFamily
+        Layout.alignment: Qt.AlignVCenter
+        onClicked: seafile.copyShareLink(libraryRow.library.id, libraryRow.library.name)
+      }
+
+      PanelActionButton {
+        visible: libraryRow.library && seafile.accountLinked
+        iconText: "\uf1f8"
+        tooltipText: "Trash"
+        foreground: root.dim
+        fontFamily: root.fontFamily
+        Layout.alignment: Qt.AlignVCenter
+        onClicked: root.openTrash(libraryRow.library.id, libraryRow.library.name)
       }
 
       PanelActionButton {
@@ -1586,6 +1675,14 @@ Panel {
         foreground: root.dim
         fontFamily: root.fontFamily
         onClicked: root.openInSeahub(remoteRow.remoteLib.id, remoteRow.remoteLib.name)
+      }
+
+      PanelActionButton {
+        iconText: "\uf1e0"
+        tooltipText: "Copy share link"
+        foreground: root.dim
+        fontFamily: root.fontFamily
+        onClicked: seafile.copyShareLink(remoteRow.remoteLib.id, remoteRow.remoteLib.name)
       }
 
       PanelActionButton {
@@ -1698,6 +1795,60 @@ Panel {
       fontFamily: root.fontFamily
       Layout.alignment: Qt.AlignVCenter
       onClicked: seafile.clearSyncError(syncErrorRow.entry.id)
+    }
+  }
+
+  component TrashItemRow: RowLayout {
+    id: trashItemRow
+    property var entry: null
+    property string repoId: ""
+    readonly property bool busy: entry ? seafile.trashBusyPath === entry.path : false
+
+    spacing: Style.space(8)
+
+    Text {
+      text: trashItemRow.entry && trashItemRow.entry.is_dir ? "\uf114" : "\uf016"
+      color: root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.icon
+      Layout.alignment: Qt.AlignTop
+    }
+
+    ColumnLayout {
+      Layout.fillWidth: true
+      spacing: Style.space(1)
+
+      Text {
+        Layout.fillWidth: true
+        text: trashItemRow.entry ? trashItemRow.entry.name : ""
+        textFormat: Text.PlainText
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        elide: Text.ElideMiddle
+      }
+
+      Text {
+        Layout.fillWidth: true
+        text: trashItemRow.entry
+          ? (Model.relativeTime(trashItemRow.entry.deleted_time) + (trashItemRow.entry.is_dir ? "" : " · " + Model.formatBytes(trashItemRow.entry.size)))
+          : ""
+        textFormat: Text.PlainText
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
+      }
+    }
+
+    PanelActionButton {
+      iconText: "\uf0e2"
+      tooltipText: "Restore"
+      foreground: root.dim
+      fontFamily: root.fontFamily
+      enabled: !trashItemRow.busy
+      Layout.alignment: Qt.AlignVCenter
+      onClicked: seafile.restoreTrashItem(trashItemRow.repoId, trashItemRow.entry.commit_id, trashItemRow.entry.path, trashItemRow.entry.name)
     }
   }
 }

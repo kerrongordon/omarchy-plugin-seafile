@@ -158,12 +158,14 @@ test('summaryText', async (t) => {
 test('formatBytes', () => {
   assert.equal(Model.formatBytes(0), '0 B');
   assert.equal(Model.formatBytes(500), '500 B');
-  // Note: only a fully-zero fraction gets trimmed (e.g. "1.00" -> "1"), so
-  // an exact-and-a-half value like this keeps both trailing digits.
-  assert.equal(Model.formatBytes(1500), '1.50 KB');
-  assert.equal(Model.formatBytes(1_500_000), '1.50 MB');
+  assert.equal(Model.formatBytes(1500), '1.5 KB');
+  assert.equal(Model.formatBytes(1_500_000), '1.5 MB');
   assert.equal(Model.formatBytes(53_687_091_200), '53.7 GB');
   assert.equal(Model.formatBytes(-5), '0 B');
+  // A fully-zero fraction still collapses to a bare integer.
+  assert.equal(Model.formatBytes(10_000), '10 KB');
+  // A non-zero trailing digit is never touched.
+  assert.equal(Model.formatBytes(1_234_000), '1.23 MB');
 });
 
 test('relativeTime', async (t) => {

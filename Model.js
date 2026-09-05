@@ -128,7 +128,10 @@ function formatBytes(bytes) {
     index++
   }
   var decimals = value >= 100 || index === 0 ? 0 : (value >= 10 ? 1 : 2)
-  return value.toFixed(decimals).replace(/\.0+$/, "") + " " + units[index]
+  // Trim trailing zeros within the fraction too (e.g. "1.50" -> "1.5"), not
+  // just a fully-zero one (e.g. "1.00" -> "1") -- then drop a now-bare dot.
+  var formatted = value.toFixed(decimals).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "")
+  return formatted + " " + units[index]
 }
 
 function relativeTime(timestampSec, nowMs) {

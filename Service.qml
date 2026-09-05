@@ -496,6 +496,17 @@ Item {
     Quickshell.execDetached(["uwsm-app", "--", "nautilus", library.path])
   }
 
+  // Opens an arbitrary local file/folder path with its default app --
+  // xdg-open picks a file manager for a directory and whatever's associated
+  // for a file, so this covers both without branching on is_dir. Used for
+  // search results that resolve to a repo already synced locally, where
+  // there's an actual file on disk to jump straight to rather than only
+  // ever landing on the library's page in Seahub.
+  function openLocalPath(path) {
+    if (!path) return
+    Quickshell.execDetached(["uwsm-app", "--", "xdg-open", path])
+  }
+
   // Unlinks a local library from syncing. seaf-cli desync never deletes the
   // local files -- it only removes the sync registration -- so this needs no
   // confirmation dialog the way a destructive delete would.

@@ -1979,6 +1979,12 @@ Panel {
     // synced libraries when possible, otherwise just shown as-is; there's
     // no extra API call made per-result just to look up a library name.
     readonly property string libraryLabel: entry ? Model.libraryName(seafile.libraries, entry.repo_id) : ""
+    // When the repo is actually synced locally, entry.path (repo-root
+    // relative, e.g. "/Finance/report.xlsx") can be joined onto the
+    // library's local folder to get a real path on disk to open directly,
+    // rather than only ever being able to jump to Seahub's web view.
+    readonly property var localLibrary: entry ? seafile.libraries.find(function(l) { return l.id === entry.repo_id }) : undefined
+    readonly property string localPath: (localLibrary && entry) ? (localLibrary.path + entry.path) : ""
 
     spacing: Style.space(8)
 
@@ -2016,6 +2022,16 @@ Panel {
         font.pixelSize: Style.font.caption
         elide: Text.ElideMiddle
       }
+    }
+
+    PanelActionButton {
+      visible: searchResultRow.localPath !== ""
+      iconText: "\uf07c"
+      tooltipText: "Open locally"
+      foreground: root.dim
+      fontFamily: root.fontFamily
+      Layout.alignment: Qt.AlignVCenter
+      onClicked: seafile.openLocalPath(searchResultRow.localPath)
     }
 
     PanelActionButton {

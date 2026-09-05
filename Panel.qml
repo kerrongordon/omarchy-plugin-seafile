@@ -174,6 +174,21 @@ Panel {
   // 404s outright on a current Seahub. The name only needs to be *a*
   // valid path segment (Seahub resolves the library from the id and just
   // displays the name back), so it's URL-encoded, not validated.
+  // accountServer is only ever set by this widget's own login flow (see
+  // Service.qml's _validate_server_url), which already restricts it to
+  // https:// (or http:// to localhost) with no embedded credentials -- this
+  // is a second, independent check right before handing a URL to the
+  // outside world, so a stale or hand-edited account file can't turn this
+  // into a launcher for an arbitrary scheme (file://, javascript:, etc).
+  function isSafeExternalUrl(url) {
+    var m = /^([a-z][a-z0-9+.-]*):\/\/([^\/@]*@)?([^\/:]+)/i.exec(url)
+    if (!m) return false
+    var scheme = m[1].toLowerCase()
+    if (scheme !== "http" && scheme !== "https") return false
+    if (m[2]) return false // no embedded userinfo ("user:pass@host")
+    return true
+  }
+
   function seahubUrl(repoId, repoName) {
     var base = String(seafile.accountServer || "").replace(/\/+$/, "")
     if (!base || !repoId) return ""
@@ -182,7 +197,7 @@ Panel {
 
   function openInSeahub(repoId, repoName) {
     var url = seahubUrl(repoId, repoName)
-    if (url) Qt.openUrlExternally(url)
+    if (url && isSafeExternalUrl(url)) Qt.openUrlExternally(url)
   }
 
   function openSyncErrors() {
@@ -510,6 +525,7 @@ Panel {
             Text {
               Layout.fillWidth: true
               text: "Signed in as " + seafile.accountUser
+              textFormat: Text.PlainText
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -555,6 +571,7 @@ Panel {
             visible: seafile.installed && root.viewMode === "libraries" && seafile.actionStatus !== ""
             width: parent.width
             text: seafile.actionStatus
+            textFormat: Text.PlainText
             color: seafile.lastError !== "" ? root.urgent : root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -694,6 +711,7 @@ Panel {
               visible: seafile.loginError !== ""
               width: parent.width
               text: seafile.loginError
+              textFormat: Text.PlainText
               color: root.urgent
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -766,6 +784,7 @@ Panel {
               visible: seafile.remoteError !== ""
               width: parent.width
               text: seafile.remoteError
+              textFormat: Text.PlainText
               color: root.urgent
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -943,6 +962,7 @@ Panel {
               visible: seafile.lastError !== "" && root.viewMode === "create"
               width: parent.width
               text: seafile.lastError
+              textFormat: Text.PlainText
               color: root.urgent
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -987,6 +1007,7 @@ Panel {
               visible: seafile.activityError !== ""
               width: parent.width
               text: seafile.activityError
+              textFormat: Text.PlainText
               color: root.urgent
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -1037,6 +1058,7 @@ Panel {
               visible: seafile.syncErrorsError !== ""
               width: parent.width
               text: seafile.syncErrorsError
+              textFormat: Text.PlainText
               color: root.urgent
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -1298,8 +1320,8 @@ Panel {
                 visible: useProxyToggle.checked
                 width: parent.width
                 password: true
-                placeholderText: "Proxy password (optional)"
-                text: seafile.proxyPassword
+                placeholderText: seafile.proxyPasswordConfigured ? "Password set (leave blank to keep)" : "Proxy password (optional)"
+                text: seafile.proxyPasswordInput
                 foreground: root.foreground
               }
             }
@@ -1308,6 +1330,7 @@ Panel {
               visible: seafile.settingsError !== ""
               width: parent.width
               text: seafile.settingsError
+              textFormat: Text.PlainText
               color: root.urgent
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -1332,7 +1355,7 @@ Panel {
                 seafile.proxyAddr = proxyAddrField.text
                 seafile.proxyPort = proxyPortField.text
                 seafile.proxyUsername = proxyUsernameField.text
-                seafile.proxyPassword = proxyPasswordField.text
+                seafile.proxyPasswordInput = proxyPasswordField.text
                 seafile.clientName = clientNameField.text
                 seafile.saveSettings()
               }
@@ -1387,6 +1410,7 @@ Panel {
         Text {
           Layout.fillWidth: true
           text: libraryRow.libraryName
+          textFormat: Text.PlainText
           color: root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.body
@@ -1397,6 +1421,7 @@ Panel {
           Layout.fillWidth: true
           text: libraryRow.meta.label
             + (libraryRow.library && libraryRow.library.path ? " \u00b7 " + libraryRow.library.path : "")
+          textFormat: Text.PlainText
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
@@ -1478,6 +1503,7 @@ Panel {
         Text {
           Layout.fillWidth: true
           text: remoteRow.remoteName
+          textFormat: Text.PlainText
           color: root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.body
@@ -1552,6 +1578,7 @@ Panel {
       Text {
         Layout.fillWidth: true
         text: activityRow.entry ? activityRow.entry.desc : ""
+        textFormat: Text.PlainText
         color: root.foreground
         font.family: root.fontFamily
         font.pixelSize: Style.font.body
@@ -1561,6 +1588,7 @@ Panel {
       Text {
         Layout.fillWidth: true
         text: activityRow.libraryLabel + " · " + (activityRow.entry ? Model.relativeTime(activityRow.entry.ctime) : "")
+        textFormat: Text.PlainText
         color: root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
@@ -1590,6 +1618,7 @@ Panel {
       Text {
         Layout.fillWidth: true
         text: syncErrorRow.entry ? syncErrorRow.entry.path : ""
+        textFormat: Text.PlainText
         color: root.foreground
         font.family: root.fontFamily
         font.pixelSize: Style.font.body
@@ -1599,6 +1628,7 @@ Panel {
       Text {
         Layout.fillWidth: true
         text: syncErrorRow.entry ? (syncErrorRow.entry.message + " · " + syncErrorRow.entry.repo_name + " · " + Model.relativeTime(syncErrorRow.entry.timestamp)) : ""
+        textFormat: Text.PlainText
         color: root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption

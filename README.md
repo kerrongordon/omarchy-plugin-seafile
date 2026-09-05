@@ -140,10 +140,21 @@ configuration UI, or directly in `~/.config/omarchy/shell.json`:
   `~/.local/state/omarchy-seafile/account.ini`, mode `0600`. Your password
   is never written to disk — it's used once, over the login process's
   stdin (never a command-line argument), to fetch the token.
+- That file is written through a symlink-safe, atomic path: every directory
+  component is opened with `O_NOFOLLOW`, an existing target that isn't a
+  plain file is refused, and the new content lands via a `0600` temp file in
+  the same held directory, `fsync`'d and renamed into place.
 - Deliberately stored outside the plugin's own directory: Omarchy hot-reloads
   a plugin whenever a file under its directory changes, and a file this
   plugin itself rewrites periodically would otherwise trigger an infinite
   reload loop.
+- Login and the remote-library API calls require `https://` (an `http://`
+  exception exists only for `localhost`, for local test servers), reject
+  URLs with embedded credentials, and only follow same-origin redirects, up
+  to a small cap.
+- The daemon's stored proxy password is never read back into this process —
+  the settings panel only shows whether one is configured, and a new value
+  is sent over the same local RPC socket without ever displaying the old one.
 
 ## Uninstall
 

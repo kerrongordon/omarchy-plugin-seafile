@@ -74,7 +74,12 @@ Item {
   property string proxyAddr: ""
   property string proxyPort: ""
   property string proxyUsername: ""
-  property string proxyPassword: ""
+  // The daemon's stored proxy password is never read back into this process
+  // -- only whether one is set. proxyPasswordInput is a transient, write-only
+  // field: it starts empty on every settings load and is only sent on save
+  // if the user actually typed something into it.
+  property bool proxyPasswordConfigured: false
+  property string proxyPasswordInput: ""
   property string clientName: ""
 
   property var syncErrors: []
@@ -120,11 +125,134 @@ Item {
   property string _libraryActionOutput: ""
   property string _libraryActionError: ""
 
+  // Shared by every script below that writes the account file. Writing it
+  // safely means never trusting the path to resolve where we expect: each
+  // path component is opened with O_NOFOLLOW relative to the last (so a
+  // symlink swapped in anywhere along ~/.local/state/omarchy-seafile/ is
+  // refused rather than followed), an existing target that isn't a plain
+  // file is rejected outright, and the new content lands via a 0600
+  // O_EXCL temp file in that same held directory, fsync'd and then renamed
+  // into place with renameat against the held directory fd -- so a reader
+  // never observes a partially-written file and a concurrent attacker can't
+  // race the rename with a symlink of their own.
+  readonly property string _pySecureIo: [
+    "import os, stat",
+    "",
+    "def _write_account_atomic(account_path, fields):",
+    "  from configparser import ConfigParser",
+    "  parts = [p for p in os.path.dirname(account_path).split('/') if p]",
+    "  dir_fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)",
+    "  try:",
+    "    for part in parts:",
+    "      try:",
+    "        next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)",
+    "      except FileNotFoundError:",
+    "        os.mkdir(part, 0o700, dir_fd=dir_fd)",
+    "        next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)",
+    "      os.close(dir_fd)",
+    "      dir_fd = next_fd",
+    "    name = os.path.basename(account_path)",
+    "    try:",
+    "      st = os.lstat(name, dir_fd=dir_fd)",
+    "      if not stat.S_ISREG(st.st_mode):",
+    "        raise OSError('refusing to write over a non-regular path: %s' % account_path)",
+    "    except FileNotFoundError:",
+    "      pass",
+    "    tmp_name = '.%s.tmp-%d' % (name, os.getpid())",
+    "    try:",
+    "      os.unlink(tmp_name, dir_fd=dir_fd)",
+    "    except FileNotFoundError:",
+    "      pass",
+    "    tmp_fd = os.open(tmp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd)",
+    "    try:",
+    "      with os.fdopen(tmp_fd, 'w') as f:",
+    "        cfg = ConfigParser()",
+    "        cfg['account'] = fields",
+    "        cfg.write(f)",
+    "        f.flush()",
+    "        os.fsync(f.fileno())",
+    "      os.rename(tmp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)",
+    "    except Exception:",
+    "      try:",
+    "        os.unlink(tmp_name, dir_fd=dir_fd)",
+    "      except OSError:",
+    "        pass",
+    "      raise",
+    "  finally:",
+    "    os.close(dir_fd)"
+  ].join("\n")
+
+  // Shared by every script below that talks to the user's Seafile server.
+  // Enforces https (an http exception only for localhost, for local test
+  // servers), rejects credentials embedded in the URL, and replaces
+  // urllib's automatic redirect-following with a same-origin check on every
+  // hop up to a small cap -- so a compromised or misconfigured server can't
+  // silently redirect an authenticated request off to an attacker-controlled
+  // host. _read_capped bounds how much of a response is ever pulled into
+  // memory before it's parsed as JSON.
+  readonly property string _pyHttp: [
+    "import time, urllib.request, urllib.parse, urllib.error",
+    "from urllib.parse import urlparse, urljoin",
+    "",
+    "def _validate_server_url(url):",
+    "  p = urlparse(url)",
+    "  if p.username or p.password:",
+    "    raise ValueError('Server URL must not contain embedded credentials')",
+    "  host = (p.hostname or '').lower()",
+    "  if not host:",
+    "    raise ValueError('Server URL is missing a host')",
+    "  loopback = host in ('localhost', '127.0.0.1', '::1')",
+    "  if p.scheme != 'https' and not (p.scheme == 'http' and loopback):",
+    "    raise ValueError('Server must use https:// (http:// is only allowed to localhost)')",
+    "  return p",
+    "",
+    "class _NoRedirect(urllib.request.HTTPRedirectHandler):",
+    "  def redirect_request(self, req, fp, code, msg, headers, newurl):",
+    "    return None",
+    "",
+    "_opener = urllib.request.build_opener(_NoRedirect)",
+    "",
+    "def _read_capped(resp, max_bytes):",
+    "  data = resp.read(max_bytes + 1)",
+    "  if len(data) > max_bytes:",
+    "    raise ValueError('Response exceeded the %d byte limit' % max_bytes)",
+    "  return data",
+    "",
+    "def _safe_open(req, timeout=10, max_redirects=2):",
+    "  deadline = time.monotonic() + timeout * (max_redirects + 1)",
+    "  url = req.full_url",
+    "  origin = _validate_server_url(url)",
+    "  for _ in range(max_redirects + 1):",
+    "    if time.monotonic() > deadline:",
+    "      raise TimeoutError('Request exceeded its overall deadline')",
+    "    try:",
+    "      return _opener.open(req, timeout=timeout)",
+    "    except urllib.error.HTTPError as e:",
+    "      if e.code not in (301, 302, 303, 307, 308):",
+    "        raise",
+    "      location = e.headers.get('Location')",
+    "      if not location:",
+    "        raise ValueError('Redirect with no Location header')",
+    "      newurl = urljoin(url, location)",
+    "      newp = _validate_server_url(newurl)",
+    "      if (newp.scheme, newp.hostname, newp.port) != (origin.scheme, origin.hostname, origin.port):",
+    "        raise ValueError('Refusing a cross-origin redirect to %s' % newurl)",
+    "      method = 'GET' if e.code == 303 else req.get_method()",
+    "      data = None if e.code == 303 else req.data",
+    "      url = newurl",
+    "      req = urllib.request.Request(url, data=data, headers=dict(req.header_items()), method=method)",
+    "  raise ValueError('Too many redirects')",
+    "",
+    "def _cap_str(value, limit=500):",
+    "  s = str(value or '')",
+    "  return s if len(s) <= limit else s[:limit] + '\\u2026'"
+  ].join("\n")
+
   // Step 1 of syncAccount(): if seafile-applet (the GUI client) is currently
   // logged in, opportunistically copy its account from its own sqlite db
   // into our ini -- but only ever to *add* one, never to clear an account
   // this widget logged into on its own. Never reports the token back to QML.
-  readonly property string _importAccountScript: [
+  readonly property string _importAccountScript: _pySecureIo + "\n" + [
     "import sys, os, sqlite3, configparser",
     "ccnet_config, account_path = sys.argv[1], sys.argv[2]",
     "existing = configparser.ConfigParser()",
@@ -146,12 +274,7 @@ Item {
     "    row = None",
     "  if row and row[2]:",
     "    url, username, token = row",
-    "    cfg = configparser.ConfigParser()",
-    "    cfg['account'] = {'server': url, 'user': username, 'token': token}",
-    "    os.makedirs(os.path.dirname(account_path), exist_ok=True)",
-    "    fd = os.open(account_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)",
-    "    with os.fdopen(fd, 'w') as f:",
-    "      cfg.write(f)"
+    "    _write_account_atomic(account_path, {'server': url, 'user': username, 'token': token})"
   ].join("\n")
 
   // Step 2 of syncAccount(): report whatever ended up in our own account
@@ -175,13 +298,18 @@ Item {
   // server's auth-token API itself (mirroring seaf-cli's get_token(), 2FA
   // included) and writes the result straight into our account ini. The
   // password travels over this process's stdin, never argv.
-  readonly property string _loginScript: [
-    "import sys, os, json, secrets, configparser, urllib.request, urllib.parse, urllib.error",
+  readonly property string _loginScript: _pyHttp + "\n" + _pySecureIo + "\n" + [
+    "import sys, json, secrets",
     "server = sys.argv[1].rstrip('/')",
     "username = sys.argv[2]",
     "tfa = sys.argv[3] if len(sys.argv) > 3 else ''",
     "account_path = sys.argv[4]",
     "password = sys.stdin.readline().rstrip(chr(10))",
+    "try:",
+    "  _validate_server_url(server)",
+    "except ValueError as e:",
+    "  print(json.dumps({'ok': False, 'error': str(e), 'needsTfa': False}))",
+    "  sys.exit(0)",
     "data = {",
     "  'username': username, 'password': password, 'platform': 'linux',",
     "  'device_id': secrets.token_hex(20), 'device_name': 'omarchy-seafile-plugin',",
@@ -191,21 +319,16 @@ Item {
     "if tfa: headers['X-SEAFILE-OTP'] = tfa",
     "req = urllib.request.Request(server + '/api2/auth-token/', data=urllib.parse.urlencode(data).encode('utf-8'), headers=headers)",
     "try:",
-    "  with urllib.request.urlopen(req, timeout=15) as resp:",
-    "    body = resp.read().decode('utf-8')",
+    "  with _safe_open(req, timeout=10) as resp:",
+    "    body = _read_capped(resp, 65536).decode('utf-8', 'replace')",
     "  token = json.loads(body).get('token', '')",
     "  if not token:",
     "    print(json.dumps({'ok': False, 'error': 'Server did not return a token', 'needsTfa': False}))",
     "  else:",
-    "    cfg = configparser.ConfigParser()",
-    "    cfg['account'] = {'server': server, 'user': username, 'token': token}",
-    "    os.makedirs(os.path.dirname(account_path), exist_ok=True)",
-    "    fd = os.open(account_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)",
-    "    with os.fdopen(fd, 'w') as f:",
-    "      cfg.write(f)",
+    "    _write_account_atomic(account_path, {'server': server, 'user': username, 'token': token})",
     "    print(json.dumps({'ok': True}))",
     "except urllib.error.HTTPError as e:",
-    "  body = e.read().decode('utf-8', 'replace')",
+    "  body = _read_capped(e, 65536).decode('utf-8', 'replace')",
     "  lowered = body.lower()",
     "  needs_tfa = (not tfa) and any(s in lowered for s in ('two-factor', 'two factor', 'otp', 'verification code'))",
     "  message = body",
@@ -216,9 +339,9 @@ Item {
     "      parts.extend(str(v) for v in value) if isinstance(value, list) else parts.append(str(value))",
     "    if parts: message = ' '.join(parts)",
     "  except Exception: pass",
-    "  print(json.dumps({'ok': False, 'error': (message.strip() or ('HTTP %d' % e.code)), 'needsTfa': needs_tfa}))",
+    "  print(json.dumps({'ok': False, 'error': (message.strip() or ('HTTP %d' % e.code))[:500], 'needsTfa': needs_tfa}))",
     "except Exception as e:",
-    "  print(json.dumps({'ok': False, 'error': str(e), 'needsTfa': False}))"
+    "  print(json.dumps({'ok': False, 'error': str(e)[:500], 'needsTfa': False}))"
   ].join("\n")
 
   function setting(name, fallback) {
@@ -418,9 +541,10 @@ Item {
   // dependency) -- no seaf-daemon-side behavior differs from what seaf-cli
   // would have done, only the HTTP client. desync/list/status/start/stop
   // stay on plain seaf-cli since those never touch the network.
-  readonly property string _remoteScript: [
-    "import sys, os, json, configparser, urllib.request, urllib.parse, urllib.error",
+  readonly property string _remoteScript: _pyHttp + "\n" + [
+    "import sys, os, json, configparser",
     "UA = 'Seafile Desktop Client (Omarchy plugin)'",
+    "MAX_BYTES = 4 * 1024 * 1024",
     "",
     "def read_account(path):",
     "  cfg = configparser.ConfigParser()",
@@ -428,15 +552,17 @@ Item {
     "  return (cfg.get('account', 'server', fallback=''), cfg.get('account', 'token', fallback=''))",
     "",
     "def api_get(url, token):",
+    "  _validate_server_url(url)",
     "  req = urllib.request.Request(url, headers={'Authorization': 'Token %s' % token, 'User-Agent': UA})",
-    "  with urllib.request.urlopen(req, timeout=15) as resp:",
-    "    return json.loads(resp.read().decode('utf-8'))",
+    "  with _safe_open(req, timeout=10) as resp:",
+    "    return json.loads(_read_capped(resp, MAX_BYTES).decode('utf-8'))",
     "",
     "def api_post(url, token, data):",
+    "  _validate_server_url(url)",
     "  body = urllib.parse.urlencode(data).encode('utf-8')",
     "  req = urllib.request.Request(url, data=body, headers={'Authorization': 'Token %s' % token, 'User-Agent': UA})",
-    "  with urllib.request.urlopen(req, timeout=15) as resp:",
-    "    return json.loads(resp.read().decode('utf-8'))",
+    "  with _safe_open(req, timeout=10) as resp:",
+    "    return json.loads(_read_capped(resp, MAX_BYTES).decode('utf-8'))",
     "",
     "def base_url(url):",
     "  from urllib.parse import urlparse",
@@ -456,10 +582,10 @@ Item {
     "def action_list(server, token):",
     "  repos = api_get(server + '/api2/repos/', token)",
     "  seen, out = {}, []",
-    "  for r in repos:",
+    "  for r in repos[:1000]:",
     "    if r['id'] in seen: continue",
     "    seen[r['id']] = True",
-    "    out.append({'id': r['id'], 'name': r.get('name', ''), 'owner': r.get('owner', ''), 'size': r.get('size', 0), 'encrypted': bool(r.get('encrypted')), 'permission': r.get('permission', '')})",
+    "    out.append({'id': r['id'], 'name': _cap_str(r.get('name', '')), 'owner': _cap_str(r.get('owner', '')), 'size': r.get('size', 0), 'encrypted': bool(r.get('encrypted')), 'permission': _cap_str(r.get('permission', ''), 20)})",
     "  print(json.dumps({'ok': True, 'repos': out}))",
     "",
     "def action_clone(mode, server, token, repo_id, target, libpasswd):",
@@ -486,14 +612,14 @@ Item {
     "",
     "def action_activity(server, token, repo_ids):",
     "  merged = []",
-    "  for repo_id in repo_ids:",
+    "  for repo_id in repo_ids[:200]:",
     "    if not repo_id: continue",
     "    try:",
     "      data = api_get('%s/api2/repos/%s/history/?per_page=10' % (server, repo_id), token)",
     "    except Exception:",
     "      continue",
-    "    for c in data.get('commits', []):",
-    "      merged.append({'id': c.get('id', ''), 'repo_id': repo_id, 'desc': (c.get('desc') or '').strip(), 'ctime': c.get('ctime', 0), 'creator_name': c.get('creator_name', ''), 'device_name': c.get('device_name', '')})",
+    "    for c in data.get('commits', [])[:50]:",
+    "      merged.append({'id': _cap_str(c.get('id', ''), 100), 'repo_id': repo_id, 'desc': _cap_str((c.get('desc') or '').strip(), 2000), 'ctime': c.get('ctime', 0), 'creator_name': _cap_str(c.get('creator_name', ''), 200), 'device_name': _cap_str(c.get('device_name', ''), 200)})",
     "  merged.sort(key=lambda e: e['ctime'], reverse=True)",
     "  print(json.dumps({'ok': True, 'entries': merged[:30]}))",
     "",
@@ -512,10 +638,10 @@ Item {
     "  elif action == 'activity':",
     "    action_activity(server, token, sys.argv[3].split(',') if len(sys.argv) > 3 and sys.argv[3] else [])",
     "except urllib.error.HTTPError as e:",
-    "  body = e.read().decode('utf-8', 'replace')",
-    "  print(json.dumps({'ok': False, 'error': (body.strip() or ('HTTP %d' % e.code))}))",
+    "  body = _read_capped(e, 65536).decode('utf-8', 'replace')",
+    "  print(json.dumps({'ok': False, 'error': (body.strip() or ('HTTP %d' % e.code))[:500]}))",
     "except Exception as e:",
-    "  print(json.dumps({'ok': False, 'error': str(e)}))"
+    "  print(json.dumps({'ok': False, 'error': str(e)[:500]}))"
   ].join("\n")
 
   // Local-only daemon settings, bandwidth limits, and sync-error detail --
@@ -523,7 +649,11 @@ Item {
   // same local `seafile` python module `_remoteScript`'s rpc_client() also
   // uses, so it needs no account/token/HTTP at all.
   readonly property string _localScript: [
-    "import sys, os, json",
+    "import sys, os, json, time",
+    "",
+    "def _cap_str(value, limit=500):",
+    "  s = str(value or '')",
+    "  return s if len(s) <= limit else s[:limit] + '\\u2026'",
     "",
     "def rpc_client():",
     "  import seafile",
@@ -556,12 +686,12 @@ Item {
     "    'ignoreSymlinks': cfg_str(rpc, 'ignore_symlinks', 'false') == 'true',",
     "    'deleteConfirmThreshold': cfg_int(rpc, 'delete_confirm_threshold', 500),",
     "    'useProxy': cfg_str(rpc, 'use_proxy', 'false') == 'true',",
-    "    'proxyType': cfg_str(rpc, 'proxy_type', 'http'),",
-    "    'proxyAddr': cfg_str(rpc, 'proxy_addr', ''),",
-    "    'proxyPort': cfg_str(rpc, 'proxy_port', ''),",
-    "    'proxyUsername': cfg_str(rpc, 'proxy_username', ''),",
-    "    'proxyPassword': cfg_str(rpc, 'proxy_password', ''),",
-    "    'clientName': cfg_str(rpc, 'client_name', '')",
+    "    'proxyType': _cap_str(cfg_str(rpc, 'proxy_type', 'http'), 20),",
+    "    'proxyAddr': _cap_str(cfg_str(rpc, 'proxy_addr', ''), 500),",
+    "    'proxyPort': _cap_str(cfg_str(rpc, 'proxy_port', ''), 10),",
+    "    'proxyUsername': _cap_str(cfg_str(rpc, 'proxy_username', ''), 200),",
+    "    'proxyPasswordConfigured': bool(cfg_str(rpc, 'proxy_password', '')),",
+    "    'clientName': _cap_str(cfg_str(rpc, 'client_name', ''), 200)",
     "  }",
     "  print(json.dumps({'ok': True, 'settings': out}))",
     "",
@@ -571,17 +701,19 @@ Item {
     "  rpc.set_config(str('ignore_symlinks'), 'true' if payload.get('ignoreSymlinks') else 'false')",
     "  rpc.set_config_int('delete_confirm_threshold', int(payload.get('deleteConfirmThreshold', 500)))",
     "  rpc.set_config('use_proxy', 'true' if payload.get('useProxy') else 'false')",
-    "  rpc.set_config('proxy_type', payload.get('proxyType') or 'http')",
-    "  rpc.set_config('proxy_addr', payload.get('proxyAddr') or '')",
-    "  rpc.set_config('proxy_port', str(payload.get('proxyPort') or ''))",
-    "  rpc.set_config('proxy_username', payload.get('proxyUsername') or '')",
-    "  rpc.set_config('proxy_password', payload.get('proxyPassword') or '')",
+    "  rpc.set_config('proxy_type', (payload.get('proxyType') or 'http')[:20])",
+    "  rpc.set_config('proxy_addr', (payload.get('proxyAddr') or '')[:500])",
+    "  rpc.set_config('proxy_port', str(payload.get('proxyPort') or '')[:10])",
+    "  rpc.set_config('proxy_username', (payload.get('proxyUsername') or '')[:200])",
+    "  if payload.get('proxyPassword'):",
+    "    rpc.set_config('proxy_password', payload.get('proxyPassword')[:500])",
     "  client_name = payload.get('clientName')",
     "  if client_name:",
-    "    rpc.set_config('client_name', client_name)",
+    "    rpc.set_config('client_name', client_name[:200])",
     "  print(json.dumps({'ok': True}))",
     "",
     "def action_sync_errors(rpc, offset, limit):",
+    "  limit = max(1, min(limit, 200))",
     "  errors = rpc.get_file_sync_errors(offset, limit)",
     "  out = []",
     "  for e in errors:",
@@ -589,7 +721,7 @@ Item {
     "      message = rpc.sync_error_id_to_str(e.err_id)",
     "    except Exception:",
     "      message = 'Sync error'",
-    "    out.append({'id': e.id, 'repo_id': e.repo_id, 'repo_name': e.repo_name, 'path': e.path, 'message': message, 'timestamp': e.timestamp})",
+    "    out.append({'id': e.id, 'repo_id': e.repo_id, 'repo_name': _cap_str(e.repo_name, 300), 'path': _cap_str(e.path, 1000), 'message': _cap_str(message, 500), 'timestamp': e.timestamp})",
     "  out.sort(key=lambda x: x['timestamp'], reverse=True)",
     "  print(json.dumps({'ok': True, 'errors': out}))",
     "",
@@ -598,14 +730,27 @@ Item {
     "  print(json.dumps({'ok': True}))",
     "",
     "def action_dir_size(path):",
+    "  deadline = time.monotonic() + 20",
+    "  max_entries = 200000",
     "  total = 0",
-    "  for dirpath, dirnames, filenames in os.walk(path):",
+    "  count = 0",
+    "  truncated = False",
+    "  for dirpath, dirnames, filenames in os.walk(path, onerror=lambda e: None):",
+    "    if time.monotonic() > deadline:",
+    "      truncated = True",
+    "      break",
     "    for name in filenames:",
+    "      count += 1",
+    "      if count > max_entries:",
+    "        truncated = True",
+    "        break",
     "      try:",
     "        total += os.lstat(os.path.join(dirpath, name)).st_size",
     "      except OSError:",
     "        pass",
-    "  print(json.dumps({'ok': True, 'gb': round(total / (1024 * 1024 * 1024), 2)}))",
+    "    if truncated:",
+    "      break",
+    "  print(json.dumps({'ok': True, 'gb': round(total / (1024 * 1024 * 1024), 2), 'truncated': truncated}))",
     "",
     "action = sys.argv[1]",
     "try:",
@@ -616,13 +761,13 @@ Item {
     "    if action == 'get_settings':",
     "      action_get_settings(rpc)",
     "    elif action == 'set_settings':",
-    "      action_set_settings(rpc, json.loads(sys.stdin.read() or '{}'))",
+    "      action_set_settings(rpc, json.loads(sys.stdin.read(1048576) or '{}'))",
     "    elif action == 'sync_errors':",
     "      action_sync_errors(rpc, int(sys.argv[2]), int(sys.argv[3]))",
     "    elif action == 'clear_sync_error':",
     "      action_clear_sync_error(rpc, int(sys.argv[2]))",
     "except Exception as e:",
-    "  print(json.dumps({'ok': False, 'error': str(e)}))"
+    "  print(json.dumps({'ok': False, 'error': str(e)[:500]}))"
   ].join("\n")
 
   function refreshSettings() {
@@ -644,7 +789,8 @@ Item {
         proxyAddr = s.proxyAddr || ""
         proxyPort = s.proxyPort || ""
         proxyUsername = s.proxyUsername || ""
-        proxyPassword = s.proxyPassword || ""
+        proxyPasswordConfigured = s.proxyPasswordConfigured === true
+        proxyPasswordInput = ""
         clientName = s.clientName || ""
         settingsLoaded = true
         settingsError = ""
@@ -669,15 +815,19 @@ Item {
       proxyAddr: proxyAddr,
       proxyPort: proxyPort,
       proxyUsername: proxyUsername,
-      proxyPassword: proxyPassword,
       clientName: clientName.trim()
     }
+    // Only sent when the user actually typed a new one -- an empty field
+    // means "leave the stored password alone", never "clear it".
+    if (proxyPasswordInput !== "") payload.proxyPassword = proxyPasswordInput
     localActionProcess.command = ["python3", "-c", _localScript, "set_settings"]
     localActionProcess._pendingStdin = JSON.stringify(payload)
     localActionProcess._onDone = function(result) {
       settingsBusy = false
       if (result && result.ok) {
         settingsError = ""
+        if (proxyPasswordInput !== "") proxyPasswordConfigured = true
+        proxyPasswordInput = ""
         notify("Seafile", "Settings saved", "normal")
       } else {
         settingsError = (result && result.error) || "Could not save settings"
@@ -732,7 +882,10 @@ Item {
       if (result && result.ok) {
         var sizes = {}
         for (var k3 in librarySizes) sizes[k3] = librarySizes[k3]
-        sizes[repoId] = result.gb
+        // A huge tree stops the walk early (see _localScript's action_dir_size
+        // deadline/entry cap) rather than hanging -- "+" flags that the total
+        // is a lower bound, not the exact size.
+        sizes[repoId] = result.truncated ? (result.gb + "+") : result.gb
         librarySizes = sizes
       }
     }
@@ -920,20 +1073,34 @@ Item {
     onTriggered: root.actionStatus = ""
   }
 
+  // Every Process below pairs with a watchdog Timer: if the child hasn't
+  // exited on its own within a generous bound, `running = false` sends it
+  // SIGTERM rather than leaving it (and whatever's awaiting its onExited --
+  // a spinner, a busy flag) hanging indefinitely on a wedged seaf-daemon
+  // socket or a stalled network call.
   Process {
     id: refreshProcess
     running: false
     command: ["bash", "-c", "if ! command -v seaf-cli >/dev/null 2>&1; then exit 3; fi; seaf-cli list --json 2>/dev/null; printf '\\n@@STATUS@@\\n'; seaf-cli status --json 2>/dev/null"]
+    onRunningChanged: if (running) refreshWatchdog.restart(); else refreshWatchdog.stop()
     stdout: StdioCollector { id: refreshStdout; waitForEnd: true; onStreamFinished: root._refreshOutput = text }
     onExited: function(exitCode) {
       root.applyRefresh(String(refreshStdout.text || root._refreshOutput || ""), exitCode)
     }
   }
 
+  Timer {
+    id: refreshWatchdog
+    interval: 20000
+    repeat: false
+    onTriggered: if (refreshProcess.running) refreshProcess.running = false
+  }
+
   Process {
     id: controlProcess
     running: false
     command: []
+    onRunningChanged: if (running) controlWatchdog.restart(); else controlWatchdog.stop()
     stdout: StdioCollector { id: controlStdout; waitForEnd: true; onStreamFinished: root._controlOutput = text }
     stderr: StdioCollector { id: controlStderr; waitForEnd: true; onStreamFinished: root._controlError = text }
     onExited: function(exitCode) {
@@ -963,6 +1130,13 @@ Item {
     }
   }
 
+  Timer {
+    id: controlWatchdog
+    interval: 20000
+    repeat: false
+    onTriggered: if (controlProcess.running) controlProcess.running = false
+  }
+
   Process {
     // Step 1 of syncAccount(): best-effort import from seafile-applet, if
     // it's logged in. Ignores its own exit code -- readAccount() right after
@@ -971,13 +1145,22 @@ Item {
     id: importAccountProcess
     running: false
     command: ["python3", "-c", root._importAccountScript, root.ccnetConfig, root.accountFile]
+    onRunningChanged: if (running) importAccountWatchdog.restart(); else importAccountWatchdog.stop()
     onExited: function() { root.readAccount() }
+  }
+
+  Timer {
+    id: importAccountWatchdog
+    interval: 15000
+    repeat: false
+    onTriggered: if (importAccountProcess.running) importAccountProcess.running = false
   }
 
   Process {
     id: accountProcess
     running: false
     command: []
+    onRunningChanged: if (running) accountWatchdog.restart(); else accountWatchdog.stop()
     stdout: StdioCollector { id: accountStdout; waitForEnd: true; onStreamFinished: root._accountOutput = text }
     onExited: function() {
       root.applyAccount(String(accountStdout.text || root._accountOutput || ""))
@@ -991,12 +1174,20 @@ Item {
     }
   }
 
+  Timer {
+    id: accountWatchdog
+    interval: 10000
+    repeat: false
+    onTriggered: if (accountProcess.running) accountProcess.running = false
+  }
+
   Process {
     id: loginProcess
     running: false
     command: []
     property string _pendingPassword: ""
     stdinEnabled: true
+    onRunningChanged: if (running) loginWatchdog.restart(); else loginWatchdog.stop()
     stdout: StdioCollector { id: loginStdout; waitForEnd: true; onStreamFinished: root._loginOutput = text }
     onStarted: {
       write(_pendingPassword + "\n")
@@ -1005,6 +1196,13 @@ Item {
     onExited: function() {
       root.applyLoginResult(String(loginStdout.text || root._loginOutput || ""))
     }
+  }
+
+  Timer {
+    id: loginWatchdog
+    interval: 35000
+    repeat: false
+    onTriggered: if (loginProcess.running) loginProcess.running = false
   }
 
   Process {
@@ -1024,6 +1222,7 @@ Item {
     property string _pendingStdin: ""
     property var _onDone: null
     stdinEnabled: true
+    onRunningChanged: if (running) remoteActionWatchdog.restart(); else remoteActionWatchdog.stop()
     stdout: StdioCollector { id: remoteActionStdout; waitForEnd: true; onStreamFinished: root._remoteOutput = text }
     onStarted: {
       write(_pendingStdin)
@@ -1039,6 +1238,13 @@ Item {
     }
   }
 
+  Timer {
+    id: remoteActionWatchdog
+    interval: 40000
+    repeat: false
+    onTriggered: if (remoteActionProcess.running) remoteActionProcess.running = false
+  }
+
   Process {
     // Runs _localScript for settings/bandwidth/sync-errors/dir-size, same
     // _onDone(result) convention as remoteActionProcess above.
@@ -1048,6 +1254,7 @@ Item {
     property string _pendingStdin: ""
     property var _onDone: null
     stdinEnabled: true
+    onRunningChanged: if (running) localActionWatchdog.restart(); else localActionWatchdog.stop()
     stdout: StdioCollector { id: localActionStdout; waitForEnd: true; onStreamFinished: root._localOutput = text }
     onStarted: {
       write(_pendingStdin)
@@ -1063,11 +1270,19 @@ Item {
     }
   }
 
+  Timer {
+    id: localActionWatchdog
+    interval: 30000
+    repeat: false
+    onTriggered: if (localActionProcess.running) localActionProcess.running = false
+  }
+
   Process {
     id: libraryActionProcess
     running: false
     command: []
     property string _pendingName: ""
+    onRunningChanged: if (running) libraryActionWatchdog.restart(); else libraryActionWatchdog.stop()
     stdout: StdioCollector { id: libraryActionStdout; waitForEnd: true; onStreamFinished: root._libraryActionOutput = text }
     stderr: StdioCollector { id: libraryActionStderr; waitForEnd: true; onStreamFinished: root._libraryActionError = text }
     onExited: function(exitCode) {
@@ -1089,21 +1304,36 @@ Item {
     }
   }
 
+  Timer {
+    id: libraryActionWatchdog
+    interval: 20000
+    repeat: false
+    onTriggered: if (libraryActionProcess.running) libraryActionProcess.running = false
+  }
+
   Process {
     id: pathCompletionProcess
     running: false
     command: []
     property var _callback: null
     property string _output: ""
+    onRunningChanged: if (running) pathCompletionWatchdog.restart(); else pathCompletionWatchdog.stop()
     stdout: StdioCollector { id: pathCompletionStdout; waitForEnd: true; onStreamFinished: pathCompletionProcess._output = text }
     onExited: function(exitCode) {
       var raw = String(pathCompletionStdout.text || _output || "")
-      var matches = raw.split("\n").map(function(s) { return s.trim() }).filter(function(s) { return s !== "" })
+      var matches = raw.split("\n").map(function(s) { return s.trim() }).filter(function(s) { return s !== "" }).slice(0, 200)
       root.pathCompletions = matches
       var cb = _callback
       _callback = null
       _output = ""
       if (cb && exitCode === 0) cb(matches)
     }
+  }
+
+  Timer {
+    id: pathCompletionWatchdog
+    interval: 8000
+    repeat: false
+    onTriggered: if (pathCompletionProcess.running) pathCompletionProcess.running = false
   }
 }

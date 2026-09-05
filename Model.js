@@ -16,15 +16,25 @@ var STATE_META = {
   "read only": { label: "Read only", glyph: "", tone: "dim" }
 }
 
+// Bounds how much of a `seaf-cli ... --json` blob is ever walked into the
+// model/UI -- a huge or malformed dump (e.g. thousands of libraries) stays
+// cheap to parse and render instead of growing the panel without limit.
+var MAX_LIST_ITEMS = 2000
+
 function parseJsonArray(text) {
   var value = String(text || "").trim()
   if (value === "") return []
   try {
     var parsed = JSON.parse(value)
-    return Array.isArray(parsed) ? parsed : []
+    return Array.isArray(parsed) ? parsed.slice(0, MAX_LIST_ITEMS) : []
   } catch (e) {
     return []
   }
+}
+
+function capString(value, limit) {
+  var s = String(value || "")
+  return s.length <= limit ? s : s.substring(0, limit) + "…"
 }
 
 function parseRefresh(raw) {
@@ -47,16 +57,16 @@ function mergeLibraries(listArr, statusArr) {
   for (var i = 0; i < listArr.length; i++) {
     var entry = listArr[i]
     if (!entry || !entry.id) continue
-    byId[entry.id] = { id: entry.id, name: String(entry.name || "Untitled"), path: String(entry.path || ""), state: "" }
+    byId[entry.id] = { id: entry.id, name: capString(entry.name || "Untitled", 300), path: capString(entry.path || "", 1000), state: "" }
     order.push(entry.id)
   }
   for (var j = 0; j < statusArr.length; j++) {
     var s = statusArr[j]
     if (!s || !s.id) continue
     if (byId[s.id]) {
-      byId[s.id].state = String(s.state || "")
+      byId[s.id].state = capString(s.state || "", 100)
     } else {
-      byId[s.id] = { id: s.id, name: String(s.name || "Untitled"), path: "", state: String(s.state || "") }
+      byId[s.id] = { id: s.id, name: capString(s.name || "Untitled", 300), path: "", state: capString(s.state || "", 100) }
       order.push(s.id)
     }
   }

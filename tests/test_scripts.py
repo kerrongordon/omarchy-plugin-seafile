@@ -383,13 +383,43 @@ class RemoteScriptTests(unittest.TestCase):
         self.assertEqual(len(ids), len(set(ids)))  # deduped
         self.assertLessEqual(len(ids), 1000)
 
-    def test_activity_parses_seahub_real_response_shape(self):
-        # Regression test: this used to read a `commits` array with
-        # id/desc/ctime/creator_name fields that don't exist in Seahub's
-        # actual RepoHistory response, silently producing zero entries
-        # against any real server. The real shape (per
-        # seahub/api2/endpoints/repo_history.py) uses `data` with
-        # commit_id/description/time(ISO)/name.
+    def test_activity_parses_the_shape_actual_deployed_servers_return(self):
+        # Regression test for a real mistake: an earlier version of this
+        # parser was rewritten to match seahub/api2/endpoints/repo_history.py
+        # on GitHub's master branch (a `data` array with commit_id/
+        # description/time(ISO)/name fields), on the assumption that was
+        # what a real server returns. It wasn't -- verified directly against
+        # a live production Seahub instance, which returns `commits` with
+        # id/desc/ctime/creator_name, the shape this now parses first.
+        self.server.handler = lambda m, p, q, b: json_response(
+            {
+                "commits": [
+                    {
+                        "id": "93f0145bbc439d9730b2ab88f6b5aba0ca2850ed",
+                        "creator_name": "me@example.com",
+                        "desc": 'Deleted ".modules.yaml" and 2 more files.\n',
+                        "ctime": 1788547214,
+                        "repo_id": "r1",
+                        "device_name": "kgp-xps",
+                        "client_version": "9.0.19",
+                    }
+                ]
+            }
+        )
+        result = self.result_of(lambda: self.ns["action_activity"](self.server.url, "tok", ["r1"]))
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(result["entries"]), 1)
+        entry = result["entries"][0]
+        self.assertEqual(entry["id"], "93f0145bbc439d9730b2ab88f6b5aba0ca2850ed")
+        self.assertEqual(entry["desc"], 'Deleted ".modules.yaml" and 2 more files.')
+        self.assertEqual(entry["creator_name"], "me@example.com")
+        self.assertEqual(entry["device_name"], "kgp-xps")
+        self.assertEqual(entry["ctime"], 1788547214)
+
+    def test_activity_falls_back_to_the_newer_documented_shape(self):
+        # Not confirmed against any real server, but handled in case a
+        # future server version switches to it (see
+        # seahub/api2/endpoints/repo_history.py on GitHub).
         self.server.handler = lambda m, p, q, b: json_response(
             {
                 "data": [

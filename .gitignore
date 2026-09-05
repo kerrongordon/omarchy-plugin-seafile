@@ -3,3 +3,8 @@
 account.ini
 *.token
 *.secret
+
+# Regenerated fresh on every test run by tests/extract_py.js.
+/tests/_extracted/
+__pycache__/
+*.pyc

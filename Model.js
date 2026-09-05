@@ -165,6 +165,9 @@ if (typeof module !== "undefined") {
     libraryName: libraryName,
     summaryText: summaryText,
     isLinked: isLinked,
-    formatBytes: formatBytes
+    formatBytes: formatBytes,
+    capString: capString,
+    parseJsonArray: parseJsonArray,
+    MAX_LIST_ITEMS: MAX_LIST_ITEMS
   }
 }

@@ -167,6 +167,17 @@ not stop `seaf-daemon` if it's running — only the bar widget goes away.
 Delete `~/.local/state/omarchy-seafile/` if you also want the stored
 account removed.
 
+## Development
+
+`Model.js` and the Python embedded in `Service.qml` (account handling,
+every Seahub API call, every seaf-daemon RPC call) have a test suite —
+no dependencies to install beyond Node and Python 3. See
+[tests/README.md](tests/README.md) or just run:
+
+```sh
+tests/run.sh
+```
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

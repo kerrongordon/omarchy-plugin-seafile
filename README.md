@@ -4,7 +4,8 @@ A Seafile sync client for the Omarchy bar, built entirely on top of
 [`seaf-cli`](https://help.seafile.com/syncing_client/seaf-cli/) — no GUI
 client (`seafile-applet`) required. Covers everything that GUI normally
 does: account login, browsing and adding libraries, sync status, and an
-activity feed, plus desktop notifications when files change.
+activity feed, plus desktop notifications when files change — and goes a
+bit further with account-wide search, share links, and trash recovery.
 
 ![Seafile panel showing synced libraries, sizes, and per-library actions](preview.png)
 
@@ -14,37 +15,57 @@ activity feed, plus desktop notifications when files change.
   anything is uploading/downloading/indexing, a warning triangle on a sync
   error, plain otherwise. Right-click to refresh, middle-click to
   start/stop the daemon.
-- **Library list** with per-library status, path, and a one-click desync
-  (unlinks without touching local files).
+- **Library list** with per-library status, path, live transfer rate and
+  sync progress (%) while busy, and a one-click desync (unlinks without
+  touching local files).
+- **Storage quota** — usage and total, shown under your signed-in account.
 - **Standalone login** — its own account-token exchange with the server,
   independent of the GUI client. If `seafile-applet` happens to be logged
   in already, its account is imported automatically as a convenience, but
   this plugin never depends on it being installed.
-- **Add libraries**: browse everything on the server (with size and an
-  encrypted-library indicator), download a fresh copy to a new folder, or
-  link an existing local folder — all inline in the bar popup, with
-  shell-style Tab path completion instead of a file-picker dialog (opening
-  one would steal focus and close the popup).
+- **Add libraries**: browse everything on the server (with size, an
+  encrypted-library indicator, and a read-only badge for libraries shared
+  without write access), download a fresh copy to a new folder, or link an
+  existing local folder — all inline in the bar popup, with shell-style Tab
+  path completion instead of a file-picker dialog (opening one would steal
+  focus and close the popup).
 - **Create a library** on the server, encrypted or not.
+- **Share links** — one click copies a Seahub share link for a library
+  (local or remote) to the clipboard.
+- **Trash** — per-library recently-deleted files and folders, with a
+  Restore button, sourced from Seahub's trash API.
+- **Search** — account-wide file search across every library on the
+  server. Requires Seafile Professional with a search backend configured;
+  a Community Edition server reports search as unavailable rather than
+  failing silently. A result already synced locally can be opened directly
+  on disk, not just in Seahub.
 - **Activity feed** — recent file changes across your libraries, pulled
-  from each library's commit history.
+  from each library's commit history, with a link straight to that
+  library in Seahub.
 - **Desktop notifications** for libraries finishing a sync, sync errors,
   individual file adds/modifications/deletes, and completed
   downloads/links/creates. Can be muted entirely in the widget's settings
   (the bar's own plugin-settings dialog, not the in-popup Settings view).
 - **Sync error detail** — which file failed and why, per library, sourced
   from the local RPC client (`seaf-cli status` only reports a library-level
-  "error" state). Dismiss individual errors once resolved.
+  "error" state). Conflicts (both versions of a file exist locally to
+  review) are shown separately from genuine errors, since nothing is
+  actually broken. Dismiss individual errors once resolved.
 - **Settings**: device name (shown in the server's linked-devices list),
   upload/download bandwidth limits (KB/s), ignore-symlinks, a
   delete-confirmation threshold, and HTTP/SOCKS proxy configuration — all
   daemon-level settings the desktop client exposes that no `seaf-cli`
-  subcommand covers, set through the same local RPC client.
+  subcommand covers, set through the same local RPC client. The proxy
+  password is never read back into the widget once set — only whether one
+  is configured.
 - **Per-library size**, calculated on demand (a button per row, not
   automatic — walking a large library's files takes a moment).
 - **Open in Seahub** — a link per library (local or remote) to that
   library's web file browser, for history/sharing/permissions, which are
   deliberately out of scope for this widget itself.
+- **Keyboard navigation** — arrow keys move a highlighted selection through
+  the library list and search results, Enter/Space activates it, same as
+  the rest of the Omarchy bar's popups.
 
 ## Requirements
 
@@ -54,6 +75,9 @@ activity feed, plus desktop notifications when files change.
 - `python3` with the `seafile` RPC module (installed alongside `seaf-cli`
   as a dependency) — used for the local parts of downloading/linking a
   library, and `sqlite3`/`configparser` from the standard library.
+- `wl-copy` (from `wl-clipboard`) for the "Copy share link" action, and
+  `xdg-open` (from `xdg-utils`) for opening a search result or a library
+  locally — both are standard on a Wayland/Omarchy desktop already.
 
 ### Installing seaf-cli on Arch / Omarchy
 
@@ -109,12 +133,15 @@ Click the bar icon to see your synced libraries. From there:
 
 - **Add library** — log in (first time) or browse the server's libraries
   and download/link one.
+- **Search** — account-wide file search (requires Seafile Professional).
 - **Activity** — recent file changes across your libraries.
-- **Errors** — per-file sync error detail, with a count badge when any
-  exist.
+- **Errors** — per-file sync error and conflict detail, with a count badge
+  when any exist.
 - **Settings** — bandwidth limits, sync behavior, and proxy configuration.
-- The small icons on each library row calculate its size and desync it
-  (local files are kept on desync).
+- The small icons on each library row calculate its size, copy a share
+  link, open its trash, and desync it (local files are kept on desync).
+- Arrow keys move a highlighted selection through the library list or
+  search results; Enter/Space opens the selected one.
 - The toggle switch in the header starts/stops the Seafile daemon. Once an
   account is linked, the daemon also auto-starts the first time the widget
   loads each session (e.g. at login) so syncing resumes without a manual
